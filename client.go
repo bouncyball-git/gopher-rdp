@@ -1019,6 +1019,10 @@ func (c *Client) mcsConnect() error {
 			c.log.LogAttrs(context.Background(), slog.LevelInfo, "RDPGFX channel opened", slog.Int("id", int(ch.ID)))
 		}
 		// AUDIO_PLAYBACK_DVC: audio output over dynamic virtual channel (MS-RDPEA).
+		if name == "AUDIO_PLAYBACK_DVC" && c.opts.AudioOut == nil {
+			ch.Reject()
+			c.log.LogAttrs(context.Background(), slog.LevelInfo, "audio playback DVC rejected (no audio-out)")
+		}
 		if name == "AUDIO_PLAYBACK_DVC" && c.opts.AudioOut != nil && c.rdpsndHandler == nil {
 			playbackID := ch.ID
 			c.rdpsndHandler = rdpsnd.NewHandler(func(data []byte) error {
@@ -1498,7 +1502,7 @@ func (c *Client) sendClientInfo() error {
 	if c.opts.DesktopComposition {
 		perfFlags |= sec.PerfEnableDesktopComposit
 	}
-	if c.opts.AudioOut == nil {
+	if c.opts.AudioOut == nil && !c.opts.RemoteAudio {
 		perfFlags |= sec.PerfDisablePlaybackSounds
 	}
 
@@ -1508,6 +1512,8 @@ func (c *Client) sendClientInfo() error {
 		Password:            c.opts.Password,
 		PerfFlags:           perfFlags,
 		AudioInput:          c.opts.AudioIn != nil,
+		RemoteAudio:         c.opts.RemoteAudio,
+		NoAudioPlayback:     c.opts.AudioOut == nil && !c.opts.RemoteAudio,
 		AutoReconnectCookie: c.arcCookie,
 	}
 	infoData := sec.EncodeClientInfo(info)
@@ -1888,8 +1894,9 @@ func (c *Client) handleCapabilitiesExchange() error {
 func (c *Client) sendConfirmActive() error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
+	soundBeeps := c.opts.AudioOut != nil || c.opts.RemoteAudio
 	capsData, capsCount := caps.BuildConfirmCapabilities(
-		c.opts.Width, c.opts.Height, c.opts.Depth, c.opts.GFX, c.serverCaps)
+		c.opts.Width, c.opts.Height, c.opts.Depth, c.opts.GFX, c.serverCaps, soundBeeps)
 
 	ca := &pdu.ConfirmActive{
 		ShareID:            c.shareID,

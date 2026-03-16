@@ -18,6 +18,8 @@ const (
 	InfoCompression       uint32 = 0x00000080
 	InfoEnableWinKey      uint32 = 0x00000100
 	InfoCompressionTypeMask uint32 = 0x00001E00
+	InfoRemoteConsoleAudio uint32 = 0x00002000 // audio plays on server (audio-mode:1)
+	InfoNoAudioPlayback    uint32 = 0x00080000 // no audio playback at all (audio-mode:2)
 	InfoAudioCapture      uint32 = 0x00200000 // client supports audio input redirection
 )
 
@@ -26,8 +28,10 @@ type ClientInfo struct {
 	Domain     string
 	Username   string
 	Password   string
-	PerfFlags  uint32 // TS_EXTENDED_INFO_PACKET performanceFlags
-	AudioInput bool   // set INFO_AUDIOCAPTURE flag
+	PerfFlags       uint32 // TS_EXTENDED_INFO_PACKET performanceFlags
+	AudioInput      bool   // set INFO_AUDIOCAPTURE flag
+	RemoteAudio     bool   // set INFO_REMOTECONSOLEAUDIO flag (audio plays on server)
+	NoAudioPlayback bool   // set INFO_NOAUDIOPLAYBACK flag (no audio at all)
 
 	// Auto-reconnect cookie (MS-RDPBCGR 2.2.4.1).
 	// When set, ARC_CS_PRIVATE_PACKET is appended to TS_EXTENDED_INFO_PACKET.
@@ -73,6 +77,12 @@ func EncodeClientInfo(info *ClientInfo) []byte {
 		if info.Password != "" {
 			flags |= InfoAutologon
 		}
+	}
+	if info.RemoteAudio {
+		flags |= InfoRemoteConsoleAudio
+	}
+	if info.NoAudioPlayback {
+		flags |= InfoNoAudioPlayback
 	}
 	if info.AudioInput {
 		flags |= InfoAudioCapture

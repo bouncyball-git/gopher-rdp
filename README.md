@@ -188,7 +188,7 @@ func main() {
 
 ### Configuration
 
-`DefaultOptions()` returns sensible defaults (1600x900, 32bpp, theming/cursors/font-smoothing on, clipboard enabled, audio disabled). Security protocol is negotiated automatically (TLS+NLA → TLS → RDP Security). Override fields as needed:
+`DefaultOptions()` returns sensible defaults (1600x900, 32bpp, theming/cursors/font-smoothing on, clipboard enabled, no audio). Security protocol is negotiated automatically (TLS+NLA → TLS → RDP Security). Override fields as needed:
 
 ```go
 opts := rdp.DefaultOptions()
@@ -236,8 +236,9 @@ opts.USBDevices = []rdp.USBRedirect{
 | `DesktopScaleFactor` | `uint32` | 0 | DPI zoom % (100/125/150/175/200/225/250/300/350/400/450/500, 0 = off) |
 | `DeviceScaleFactor` | `uint32` | 0 | Physical DPI (100, 140, 180) |
 | `Clipboard` | `bool` | true | Enable clipboard channel |
-| `AudioOut` | `*AudioConfig` | nil | Audio output config (nil = disabled) |
+| `AudioOut` | `*AudioConfig` | nil | Audio output config (nil = no audio) |
 | `AudioIn` | `*AudioConfig` | nil | Audio input config (nil = disabled) |
+| `RemoteAudio` | `bool` | false | Audio plays on server instead of redirecting to client |
 | `Drives` | `[]DriveRedirect` | nil | Local directories shared as network drives |
 | `Printers` | `[]PrinterRedirect` | nil | Printer redirects (save jobs to file and/or submit via IPP) |
 | `Serials` | `[]SerialRedirect` | nil | Serial port redirects (e.g. COM3 → /dev/ttyUSB0) |
@@ -583,7 +584,7 @@ Pass a flag to toggle its default. Theming, cursors, and font smoothing are on b
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-clipboard-off` | false | Disable clipboard redirection |
-| `-audio-out [opts]` | disabled | Audio output (default `stereo,hirate,15ms`). Suboptions: `stereo`, `mono`, `hirate`, `lorate`, `Nms`, `pcm`, Hz value |
+| `-audio-out [opts]` | no audio | Audio output. Omit = no audio at all. `remote` = play on server. Default suboptions: `stereo,hirate,15ms`. Other suboptions: `mono`, `lorate`, `Nms`, `pcm`, Hz value |
 | `-audio-in [opts]` | disabled | Audio input (default `mono,lorate,5ms`, `-web` only). Same suboptions as `-audio-out` |
 | `-drive name:/path` | | Share local directory as network drive (repeatable). Append `:ro` for read-only |
 | `-printer name:/path` | | Redirect printer (repeatable). Save jobs to dir and/or submit via IPP |
@@ -597,9 +598,11 @@ Pass a flag to toggle its default. Theming, cursors, and font smoothing are on b
 **Audio suboption examples:**
 
 ```
--audio-out                       # defaults: stereo, 44100+ Hz, 15ms buffer
--audio-out mono,lorate,30ms      # mono, any sample rate, 30ms buffer
--audio-out pcm,48000             # PCM only (reject ADPCM), exact 48000 Hz sample rate
+                                 # (omit -audio-out entirely = no audio at all)
+-audio-out                       # redirect to client: stereo, 44100+ Hz, 15ms buffer
+-audio-out remote                # play audio on server (no redirection)
+-audio-out mono,lorate,30ms      # redirect to client: mono, any sample rate, 30ms buffer
+-audio-out pcm,48000             # redirect to client: PCM only (reject ADPCM), exact 48000 Hz
 -audio-in                        # defaults: mono, any rate, 5ms buffer
 -audio-in stereo,hirate,10ms     # stereo, 44100+ Hz, 10ms buffer
 -audio-out -audio-in             # output + microphone together

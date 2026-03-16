@@ -207,7 +207,7 @@ func TestEncodeVirtualChannelFlags(t *testing.T) {
 func TestBuildConfirmCapabilities(t *testing.T) {
 	// Server advertises all cap types — all conditional caps should be echoed.
 	var allCaps uint32 = 0xFFFFFFFF
-	data, count := BuildConfirmCapabilities(1024, 768, 24, true, allCaps)
+	data, count := BuildConfirmCapabilities(1024, 768, 24, true, allCaps, true)
 	if count != 22 {
 		t.Fatalf("count = %d, want 22", count)
 	}
@@ -245,7 +245,7 @@ func TestBuildConfirmCapabilities(t *testing.T) {
 func TestBuildConfirmCapabilitiesNoGFX(t *testing.T) {
 	// Server advertises all caps, but gfx=false — GFX caps should be absent.
 	var allCaps uint32 = 0xFFFFFFFF
-	data, count := BuildConfirmCapabilities(1024, 768, 24, false, allCaps)
+	data, count := BuildConfirmCapabilities(1024, 768, 24, false, allCaps, true)
 	if count != 19 {
 		t.Fatalf("count = %d, want 19", count)
 	}
@@ -269,7 +269,7 @@ func TestBuildConfirmCapabilitiesNoGFX(t *testing.T) {
 
 func TestBuildConfirmCapabilitiesConditional(t *testing.T) {
 	// Server doesn't advertise any conditional caps — 15 base caps only.
-	data, count := BuildConfirmCapabilities(1024, 768, 24, true, 0)
+	data, count := BuildConfirmCapabilities(1024, 768, 24, true, 0, true)
 	if count != 15 {
 		t.Fatalf("count = %d, want 15", count)
 	}
@@ -291,7 +291,7 @@ func TestBuildConfirmCapabilitiesConditional(t *testing.T) {
 }
 
 func TestDecodeCapabilitySetsRoundTrip(t *testing.T) {
-	data, count := BuildConfirmCapabilities(800, 600, 16, true, 0xFFFFFFFF)
+	data, count := BuildConfirmCapabilities(800, 600, 16, true, 0xFFFFFFFF, true)
 	sets, err := DecodeCapabilitySets(slog.Default(), data, count)
 	if err != nil {
 		t.Fatalf("DecodeCapabilitySets: %v", err)
@@ -424,7 +424,7 @@ func TestEncodeBitmapCodecsFields(t *testing.T) {
 
 func TestDecodeCapabilitySetsPartial(t *testing.T) {
 	// Truncated data — should parse what it can
-	data, _ := BuildConfirmCapabilities(1024, 768, 24, true, 0xFFFFFFFF)
+	data, _ := BuildConfirmCapabilities(1024, 768, 24, true, 0xFFFFFFFF, true)
 	sets, err := DecodeCapabilitySets(slog.Default(), data[:10], 11)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

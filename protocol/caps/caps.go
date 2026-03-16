@@ -221,9 +221,11 @@ func putVirtualChannel(buf []byte, off int) {
 	binary.LittleEndian.PutUint32(buf[off+4:], 1) // flags = VCCAPS_COMPR_CS_8K
 }
 
-func putSound(buf []byte, off int) {
+func putSound(buf []byte, off int, beeps bool) {
 	putCapHeader(buf, off, TypeSound, soundSize)
-	binary.LittleEndian.PutUint16(buf[off+4:], 1) // soundFlags = SOUND_BEEPS_FLAG
+	if beeps {
+		binary.LittleEndian.PutUint16(buf[off+4:], 1) // soundFlags = SOUND_BEEPS_FLAG
+	}
 }
 
 func putControl(buf []byte, off int) {
@@ -418,7 +420,7 @@ func EncodeVirtualChannel() []byte {
 // EncodeSound returns the Sound capability set (type 0x000C).
 func EncodeSound() []byte {
 	buf := make([]byte, soundSize)
-	putSound(buf, 0)
+	putSound(buf, 0, true)
 	return buf
 }
 
@@ -439,7 +441,7 @@ func serverHasCap(serverCaps uint32, capType uint16) bool {
 // serverCaps is a bitfield of cap types the server advertised in Demand Active;
 // conditional caps (MultifragUpdate, LargePointer, CompDesk, OffscreenBitmapCache,
 // and GFX caps) are only included when the server also advertises them.
-func BuildConfirmCapabilities(width, height, depth uint16, gfx bool, serverCaps uint32) ([]byte, uint16) {
+func BuildConfirmCapabilities(width, height, depth uint16, gfx bool, serverCaps uint32, soundBeeps bool) ([]byte, uint16) {
 	size := baseCapsSize
 	count := uint16(capsCountBase)
 
@@ -505,7 +507,7 @@ func BuildConfirmCapabilities(width, height, depth uint16, gfx bool, serverCaps 
 	off += glyphCacheSize
 	putVirtualChannel(buf, off)
 	off += virtualChannelSize
-	putSound(buf, off)
+	putSound(buf, off, soundBeeps)
 	off += soundSize
 	putControl(buf, off)
 	off += controlSize

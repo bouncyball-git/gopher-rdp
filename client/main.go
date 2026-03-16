@@ -61,8 +61,9 @@ func (o *optionalString) Set(s string) error {
 //
 // Tokens: stereo/mono, hirate/lorate, Nms, pcm, all-digits = exact Hz.
 type audioFlag struct {
-	cfg rdp.AudioConfig
-	set bool
+	cfg    rdp.AudioConfig
+	set    bool
+	remote bool // "remote" token: audio plays on server
 }
 
 func (a *audioFlag) IsBoolFlag() bool { return true }
@@ -71,6 +72,10 @@ func (a *audioFlag) Set(s string) error {
 	a.set = true
 	if s == "true" {
 		return nil // keep defaults
+	}
+	if s == "remote" {
+		a.remote = true
+		return nil
 	}
 	for _, tok := range strings.Split(s, ",") {
 		tok = strings.TrimSpace(tok)
@@ -107,7 +112,7 @@ func (a *audioFlag) Set(s string) error {
 }
 
 func (a *audioFlag) config() *rdp.AudioConfig {
-	if !a.set {
+	if !a.set || a.remote {
 		return nil
 	}
 	c := a.cfg // copy
@@ -644,7 +649,7 @@ func main() {
 	clipboardOff := flag.Bool("clipboard-off", false, "Disable clipboard redirection")
 	var audioOut audioFlag
 	audioOut.cfg = rdp.AudioConfig{BufMs: 15, Stereo: true, MinRate: 44100}
-	flag.Var(&audioOut, "audio-out", "Audio output: stereo,mono,hirate,lorate,Nms,pcm,Hz (default stereo,hirate,15ms)")
+	flag.Var(&audioOut, "audio-out", "Audio output: remote, or stereo,mono,hirate,lorate,Nms,pcm,Hz (default stereo,hirate,15ms)")
 	var audioIn audioFlag
 	audioIn.cfg = rdp.AudioConfig{BufMs: 5}
 	flag.Var(&audioIn, "audio-in", "Audio input: stereo,mono,hirate,lorate,Nms,pcm,Hz (default mono,lorate,5ms)")
@@ -727,14 +732,16 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  -enable-all-visuals      Enable all visual effects\n")
 		fmt.Fprintf(os.Stderr, "\nRedirect (all on by default):\n")
 		fmt.Fprintf(os.Stderr, "  -clipboard-off           Disable clipboard redirection\n")
-		fmt.Fprintf(os.Stderr, "  -audio-out [opts]        Audio output (default stereo,hirate,15ms)\n")
-		fmt.Fprintf(os.Stderr, "                           opts: stereo,mono,hirate,lorate,Nms,pcm,Hz\n")
+		fmt.Fprintf(os.Stderr, "  -audio-out [opts]        Audio output (omit = no audio at all)\n")
+		fmt.Fprintf(os.Stderr, "                           opts: remote, or stereo,mono,hirate,lorate,Nms,pcm,Hz\n")
 		fmt.Fprintf(os.Stderr, "  -audio-in [opts]         Audio input (default mono,lorate,5ms, -web only)\n")
 		fmt.Fprintf(os.Stderr, "                           opts: stereo,mono,hirate,lorate,Nms,pcm,Hz\n")
 		fmt.Fprintf(os.Stderr, "  Audio examples:\n")
-		fmt.Fprintf(os.Stderr, "    -audio-out                       defaults: stereo, 44100+ Hz, 15ms buffer\n")
-		fmt.Fprintf(os.Stderr, "    -audio-out mono,lorate,30ms      mono, any sample rate, 30ms buffer\n")
-		fmt.Fprintf(os.Stderr, "    -audio-out pcm,48000             PCM only (reject ADPCM), exact 48000 Hz\n")
+		fmt.Fprintf(os.Stderr, "                                     (omit -audio-out = no audio at all)\n")
+		fmt.Fprintf(os.Stderr, "    -audio-out                       redirect to client: stereo, 44100+ Hz, 15ms\n")
+		fmt.Fprintf(os.Stderr, "    -audio-out remote                play audio on server (no redirection)\n")
+		fmt.Fprintf(os.Stderr, "    -audio-out mono,lorate,30ms      redirect: mono, any sample rate, 30ms buffer\n")
+		fmt.Fprintf(os.Stderr, "    -audio-out pcm,48000             redirect: PCM only (no ADPCM), exact 48000 Hz\n")
 		fmt.Fprintf(os.Stderr, "    -audio-in                        defaults: mono, any rate, 5ms buffer\n")
 		fmt.Fprintf(os.Stderr, "    -audio-in stereo,hirate,10ms     stereo, 44100+ Hz, 10ms buffer\n")
 		fmt.Fprintf(os.Stderr, "    -audio-out -audio-in             output + microphone together\n\n")
@@ -1030,6 +1037,7 @@ func main() {
 		Clipboard:            !*clipboardOff,
 		AudioOut:             audioOut.config(),
 		AudioIn:              audioIn.config(),
+		RemoteAudio:          audioOut.remote,
 		Drives:               []rdp.DriveRedirect(drives),
 		Serials:              []rdp.SerialRedirect(serials),
 		Parallels:            []rdp.ParallelRedirect(parallels),

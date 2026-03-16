@@ -51,8 +51,9 @@ type Options struct {
 
 	// Redirect
 	Clipboard bool               // Redirect clipboard (default: true)
-	AudioOut  *AudioConfig       // Audio output config (nil = disabled)
-	AudioIn   *AudioConfig       // Audio input config (nil = disabled)
+	AudioOut     *AudioConfig       // Audio output config (nil = disabled)
+	AudioIn      *AudioConfig       // Audio input config (nil = disabled)
+	RemoteAudio  bool               // Audio plays on server instead of client (audio-mode:1)
 	Drives    []DriveRedirect    // Redirect local directories as network drives
 	Serials   []SerialRedirect   // Redirect local serial ports
 	Parallels []ParallelRedirect // Redirect local parallel ports
