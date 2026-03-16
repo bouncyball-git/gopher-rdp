@@ -1,0 +1,892 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>gopher-rdp</title>
+<style>
+  * { margin: 0; padding: 0; }
+  body { background: #1a1a2e; overflow: auto; }
+  canvas { cursor: default; image-rendering: pixelated; display: block; }
+  #overlay { position: fixed; inset: 0; background: #000; color: #cc7000; font: bold 48px sans-serif; z-index: 20; display: flex; flex-direction: column; justify-content: center; align-items: center; }
+  #mic-indicator { position: fixed; top: 8px; right: 8px; width: 12px; height: 12px; border-radius: 50%; background: #e00; z-index: 30; display: none; box-shadow: 0 0 6px #e00; }
+  #overlay.hidden { display: none; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner { width: 48px; height: 48px; border: 4px solid #331c00; border-top-color: #cc7000; border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 24px; }
+</style>
+</head>
+<body>
+<div id="overlay"><div class="spinner" id="spinner"></div><span id="overlay-text">Connecting...</span></div>
+<div id="mic-indicator"></div>
+<canvas id="screen"></canvas>
+<script>
+(function() {
+  var dpr = window.devicePixelRatio || 1;
+  var params = new URLSearchParams(location.search);
+  // Use URL params if present, otherwise detect browser viewport in physical pixels
+  var W = parseInt(params.get("w")) || Math.round(window.innerWidth * dpr);
+  var H = parseInt(params.get("h")) || Math.round(window.innerHeight * dpr);
+
+  var canvas = document.getElementById("screen");
+  var ctx = canvas.getContext("2d");
+  var overlay = document.getElementById("overlay");
+  var overlayText = document.getElementById("overlay-text");
+  var spinner = document.getElementById("spinner");
+  // Set canvas pixel buffer to match RDP resolution
+  canvas.width = W;
+  canvas.height = H;
+
+  // Scale CSS display size so 1 canvas pixel = 1 physical pixel (HiDPI fix)
+  canvas.style.width = (W / dpr) + "px";
+  canvas.style.height = (H / dpr) + "px";
+
+  // Fill black initially
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, W, H);
+
+  // Cursor cache: index → {url, hotX, hotY}
+  var cursorCache = {};
+
+  // Temp canvas for cursor PNG generation
+  var cursorCanvas = document.createElement("canvas");
+  var cursorCtx = cursorCanvas.getContext("2d");
+
+  // Audio playback engine
+  var audioCtx = null;
+  var audioNode = null;
+  var audioUseWorklet = false; // true if AudioWorklet path active
+  // ScriptProcessor fallback ring buffer (only used when AudioWorklet unavailable)
+  var audioRingL = null;
+  var audioRingR = null;
+  var audioRingSize = 262144;
+  var audioRingMask = audioRingSize - 1;
+  var audioWritePos = 0;
+  var audioReadPos = 0;
+  var audioResumed = false;
+  var audioPreBuffered = false;
+  var audioBufMs = parseInt(params.get("abuf")) || 15;
+  var audioPreBufThreshold = 0; // computed in ensureAudioCtx from audioBufMs
+
+  var audioWorkletCode = [
+    'class AudioOutputProcessor extends AudioWorkletProcessor {',
+    '  constructor() {',
+    '    super();',
+    '    this.ringL = new Float32Array(262144);',
+    '    this.ringR = new Float32Array(262144);',
+    '    this.mask = 262143;',
+    '    this.wp = 0;',
+    '    this.rp = 0;',
+    '    this.preBuffered = false;',
+    '    this.port.onmessage = (e) => {',
+    '      var left = e.data.left;',
+    '      var right = e.data.right;',
+    '      var frames = left.length;',
+    '      var wp = this.wp;',
+    '      for (var i = 0; i < frames; i++) {',
+    '        var idx = wp & this.mask;',
+    '        this.ringL[idx] = left[i];',
+    '        this.ringR[idx] = right[i];',
+    '        wp++;',
+    '      }',
+    '      this.wp = wp & this.mask;',
+    '      var avail = (this.wp - this.rp) & this.mask;',
+    '      if (avail > 253952) {',  // ringSize - 8192
+    '        this.rp = (this.wp - 22050) & this.mask;',
+    '      }',
+    '    };',
+    '  }',
+    '  process(inputs, outputs) {',
+    '    var outL = outputs[0][0];',
+    '    var outR = outputs[0][1];',
+    '    var len = outL.length;',
+    '    var avail = (this.wp - this.rp) & this.mask;',
+    '    if (!this.preBuffered) {',
+    '      if (avail < 8192) {',
+    '        for (var i = 0; i < len; i++) { outL[i] = 0; outR[i] = 0; }',
+    '        return true;',
+    '      }',
+    '      this.preBuffered = true;',
+    '    }',
+    '    var count = avail < len ? avail : len;',
+    '    var rp = this.rp;',
+    '    for (var i = 0; i < count; i++) {',
+    '      var idx = rp & this.mask;',
+    '      outL[i] = this.ringL[idx];',
+    '      outR[i] = this.ringR[idx];',
+    '      rp++;',
+    '    }',
+    '    for (var i = count; i < len; i++) { outL[i] = 0; outR[i] = 0; }',
+    '    this.rp = rp & this.mask;',
+    '    if (count < len) { this.preBuffered = false; }',
+    '    return true;',
+    '  }',
+    '}',
+    'registerProcessor("audio-output-processor", AudioOutputProcessor);'
+  ].join('\n');
+
+  // Create AudioContext and load worklet for a given sample rate.
+  // If an existing context has a different rate, tear it down and recreate.
+  function ensureAudioCtx(rate) {
+    if (audioCtx) {
+      if (audioCtx.sampleRate === rate) return;
+      // Rate mismatch — tear down and recreate
+      if (audioNode) { audioNode.disconnect(); audioNode = null; }
+      audioCtx.close();
+      audioCtx = null;
+      audioUseWorklet = false;
+      audioRingL = null;
+      audioRingR = null;
+    }
+    audioPreBufThreshold = Math.max(128, Math.round(rate * audioBufMs / 1000));
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({sampleRate: rate});
+
+    loadAudioWorklet();
+
+    // Resume immediately (works if called from user gesture context,
+    // otherwise the interaction listeners below will resume it).
+    audioCtx.resume().then(function() { audioResumed = true; });
+  }
+
+  // Load the AudioWorklet processor (or fall back to ScriptProcessor).
+  function loadAudioWorklet() {
+    if (!audioCtx) return;
+    if (audioCtx.audioWorklet) {
+      var code = audioWorkletCode.replace('8192', '' + audioPreBufThreshold);
+      var blob = new Blob([code], {type: "application/javascript"});
+      var url = URL.createObjectURL(blob);
+      audioCtx.audioWorklet.addModule(url).then(function() {
+        URL.revokeObjectURL(url);
+        if (!audioCtx) return;
+        audioNode = new AudioWorkletNode(audioCtx, "audio-output-processor", {
+          outputChannelCount: [2]
+        });
+        audioNode.connect(audioCtx.destination);
+        audioUseWorklet = true;
+      }).catch(function() {
+        setupAudioScriptProcessor();
+      });
+    } else {
+      setupAudioScriptProcessor();
+    }
+  }
+
+  function setupAudioScriptProcessor() {
+    if (!audioCtx) return;
+    audioRingL = new Float32Array(audioRingSize);
+    audioRingR = new Float32Array(audioRingSize);
+    audioWritePos = 0;
+    audioReadPos = 0;
+    audioPreBuffered = false;
+    audioUseWorklet = false;
+
+    audioNode = audioCtx.createScriptProcessor(4096, 0, 2);
+    audioNode.onaudioprocess = function(e) {
+      var outL = e.outputBuffer.getChannelData(0);
+      var outR = e.outputBuffer.getChannelData(1);
+      var avail = (audioWritePos - audioReadPos) & audioRingMask;
+      if (!audioPreBuffered) {
+        if (avail < audioPreBufThreshold) {
+          for (var i = 0; i < outL.length; i++) { outL[i] = 0; outR[i] = 0; }
+          return;
+        }
+        audioPreBuffered = true;
+      }
+      var count = Math.min(avail, outL.length);
+      var rp = audioReadPos;
+      for (var i = 0; i < count; i++) {
+        var idx = rp & audioRingMask;
+        outL[i] = audioRingL[idx];
+        outR[i] = audioRingR[idx];
+        rp++;
+      }
+      for (var i = count; i < outL.length; i++) { outL[i] = 0; outR[i] = 0; }
+      audioReadPos = rp & audioRingMask;
+      if (count < outL.length) { audioPreBuffered = false; }
+    };
+    audioNode.connect(audioCtx.destination);
+  }
+
+  // Eagerly create AudioContext on first user interaction so it's resumed
+  // and the worklet is loaded before audio data arrives from the server.
+  function initAudioOnGesture() {
+    if (audioCtx) {
+      // Context exists — just ensure it's resumed
+      if (!audioResumed) {
+        audioCtx.resume().then(function() { audioResumed = true; });
+      }
+      return;
+    }
+    // Create at browser default rate; ensureAudioCtx will recreate if server rate differs.
+    var defaultRate = 44100;
+    try {
+      var tmp = new (window.AudioContext || window.webkitAudioContext)();
+      defaultRate = tmp.sampleRate;
+      tmp.close();
+    } catch(e) {}
+    ensureAudioCtx(defaultRate);
+  }
+  document.addEventListener("click", initAudioOnGesture, {once: false});
+  document.addEventListener("keydown", initAudioOnGesture, {once: false});
+
+  // Microphone capture engine
+  // Browser captures at its native rate (e.g. 48000Hz from PipeWire/PulseAudio).
+  // Go side resamples to server's format (typically 44100Hz stereo 16-bit).
+  // WS message: [0x07][srcRate:u32 LE][srcCh:u16 LE][pcm S16LE interleaved...]
+  var micStream = null;
+  var micAudioCtx = null;
+  var micSource = null;
+  var micProcessor = null;
+  var micIndicator = document.getElementById("mic-indicator");
+  var micBrowserRate = 0;
+  // Accumulation buffer for ~10ms chunks
+  var micAccumBufs = null; // array of Float32Array per channel
+  var micAccumFrames = 0;
+  var micAccumTarget = 0; // frames per ~10ms at browser rate
+
+  function startMic(channels, rate, bps, bufMs) {
+    stopMic();
+    navigator.mediaDevices.getUserMedia({
+      audio: {echoCancellation: true, noiseSuppression: true}
+    }).then(function(stream) {
+      micStream = stream;
+      // Use browser's native sample rate — avoids NotSupportedError
+      micAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      micBrowserRate = micAudioCtx.sampleRate;
+      if (!bufMs || bufMs <= 0) bufMs = 10;
+      micAccumTarget = Math.round(micBrowserRate * bufMs / 1000);
+      micAccumBufs = null;
+      micAccumFrames = 0;
+      micSource = micAudioCtx.createMediaStreamSource(stream);
+
+      if (micAudioCtx.audioWorklet) {
+        var workletCode = 'class MicProcessor extends AudioWorkletProcessor{process(inputs){if(inputs[0]&&inputs[0].length>0){var out=[];for(var i=0;i<inputs[0].length;i++){out.push(new Float32Array(inputs[0][i]));}this.port.postMessage(out);}return true;}}registerProcessor("mic-processor",MicProcessor);';
+        var blob = new Blob([workletCode], {type: "application/javascript"});
+        var url = URL.createObjectURL(blob);
+        micAudioCtx.audioWorklet.addModule(url).then(function() {
+          URL.revokeObjectURL(url);
+          if (!micAudioCtx) return;
+          var workletNode = new AudioWorkletNode(micAudioCtx, "mic-processor");
+          workletNode.port.onmessage = function(e) {
+            accumulateAndSend(e.data);
+          };
+          micSource.connect(workletNode);
+          workletNode.connect(micAudioCtx.destination);
+          micProcessor = workletNode;
+          micIndicator.style.display = "block";
+        }).catch(function() {
+          setupScriptProcessor();
+        });
+      } else {
+        setupScriptProcessor();
+      }
+    }).catch(function(err) {
+      console.warn("[mic] getUserMedia failed:", err);
+    });
+  }
+
+  function setupScriptProcessor() {
+    if (!micAudioCtx || !micSource) return;
+    var proc = micAudioCtx.createScriptProcessor(4096, 2, 2);
+    proc.onaudioprocess = function(e) {
+      var chans = [];
+      for (var ch = 0; ch < e.inputBuffer.numberOfChannels; ch++) {
+        chans.push(new Float32Array(e.inputBuffer.getChannelData(ch)));
+      }
+      accumulateAndSend(chans);
+    };
+    micSource.connect(proc);
+    proc.connect(micAudioCtx.destination);
+    micProcessor = proc;
+    micIndicator.style.display = "block";
+  }
+
+  function accumulateAndSend(inputChannels) {
+    var srcCh = inputChannels.length;
+    var frames = inputChannels[0].length;
+    if (!micAccumBufs) {
+      micAccumBufs = [];
+      for (var c = 0; c < srcCh; c++) {
+        micAccumBufs.push(new Float32Array(micAccumTarget + 256));
+      }
+      micAccumFrames = 0;
+    }
+    // Grow if needed
+    if (micAccumFrames + frames > micAccumBufs[0].length) {
+      for (var c = 0; c < srcCh; c++) {
+        var nb = new Float32Array(micAccumFrames + frames + 256);
+        nb.set(micAccumBufs[c]);
+        micAccumBufs[c] = nb;
+      }
+    }
+    for (var c = 0; c < srcCh; c++) {
+      micAccumBufs[c].set(inputChannels[c], micAccumFrames);
+    }
+    micAccumFrames += frames;
+    while (micAccumFrames >= micAccumTarget) {
+      var sendChans = [];
+      for (var c = 0; c < srcCh; c++) {
+        sendChans.push(micAccumBufs[c].subarray(0, micAccumTarget));
+      }
+      sendMicPCM(sendChans);
+      var remain = micAccumFrames - micAccumTarget;
+      for (var c = 0; c < srcCh; c++) {
+        micAccumBufs[c].copyWithin(0, micAccumTarget, micAccumTarget + remain);
+      }
+      micAccumFrames = remain;
+    }
+  }
+
+  function sendMicPCM(inputChannels) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    var srcCh = inputChannels.length;
+    var frames = inputChannels[0].length;
+    var headerSize = 1 + 4 + 2; // type + rate(u32) + channels(u16)
+    var pcmBytes = frames * srcCh * 2;
+    var buf = new Uint8Array(headerSize + pcmBytes);
+    var dv = new DataView(buf.buffer);
+    buf[0] = 0x07;
+    dv.setUint32(1, micBrowserRate, true);
+    dv.setUint16(5, srcCh, true);
+    var off = headerSize;
+    for (var i = 0; i < frames; i++) {
+      for (var ch = 0; ch < srcCh; ch++) {
+        var s = inputChannels[ch][i];
+        if (s > 1.0) s = 1.0;
+        if (s < -1.0) s = -1.0;
+        dv.setInt16(off, (s * 32767) | 0, true);
+        off += 2;
+      }
+    }
+    ws.send(buf);
+  }
+
+  function stopMic() {
+    if (micProcessor) {
+      micProcessor.disconnect();
+      if (micProcessor.port) micProcessor.port.close();
+      micProcessor = null;
+    }
+    if (micSource) { micSource.disconnect(); micSource = null; }
+    if (micStream) {
+      micStream.getTracks().forEach(function(t) { t.stop(); });
+      micStream = null;
+    }
+    if (micAudioCtx) { micAudioCtx.close(); micAudioCtx = null; }
+    micAccumBufs = null;
+    micAccumFrames = 0;
+    if (micIndicator) micIndicator.style.display = "none";
+  }
+
+  // Set tab title from monitor params
+  var monIdx = params.get("monitor");
+  if (monIdx !== null) {
+    var monTitle = "Display " + monIdx;
+    if (params.get("primary") === "1") monTitle += " (primary)";
+    document.title = monTitle;
+  }
+
+  // Connect WebSocket, passing physical resolution for RDP auto-sizing
+  var proto = location.protocol === "https:" ? "wss:" : "ws:";
+  var ws = new WebSocket(proto + "//" + location.host + "/ws?w=" + W + "&h=" + H + "&monitor=" + (monIdx || "0"));
+  ws.binaryType = "arraybuffer";
+
+  var isMac = /Mac|iPhone|iPad/.test(navigator.platform);
+  // Last clipboard text received from the remote desktop (for copy event fallback).
+  var remoteClipText = "";
+
+  function showOverlay(text) {
+    spinner.style.display = "none";
+    overlayText.textContent = text;
+    overlay.classList.remove("hidden");
+  }
+
+  ws.onopen = function() {
+    overlay.classList.add("hidden");
+  };
+
+  ws.onclose = function() {
+    stopMic();
+    showOverlay("Disconnected");
+  };
+
+  ws.onerror = function() {
+    showOverlay("Connection error");
+  };
+
+  ws.onmessage = function(ev) {
+    var buf = new Uint8Array(ev.data);
+    if (buf.length < 2) return;
+
+    var msgType = buf[0];
+    if (msgType === 0x01) {
+      // Bitmap batch: one or more [0x01][x:u16][y:u16][w:u16][h:u16][rgba...] packed
+      // into a single WS message so all frame rects are painted atomically.
+      var off = 0;
+      while (off + 9 <= buf.length && buf[off] === 0x01) {
+        var x = buf[off+1] | (buf[off+2] << 8);
+        var y = buf[off+3] | (buf[off+4] << 8);
+        var w = buf[off+5] | (buf[off+6] << 8);
+        var h = buf[off+7] | (buf[off+8] << 8);
+        var size = w * h * 4;
+        if (off + 9 + size > buf.length) break;
+        var rgba = buf.subarray(off+9, off+9+size);
+        var img = new ImageData(new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, size), w, h);
+        ctx.putImageData(img, x, y);
+        off += 9 + size;
+      }
+    } else if (msgType === 0x03) {
+      // Disconnect notification from server
+      showOverlay("Disconnected");
+      ws.close();
+      return;
+    } else if (msgType === 0x04) {
+      // Server resize confirmation: [0x04][w:u16][h:u16]
+      if (buf.length < 5) return;
+      var newW = buf[1] | (buf[2] << 8);
+      var newH = buf[3] | (buf[4] << 8);
+      W = newW;
+      H = newH;
+      canvas.width = W;
+      canvas.height = H;
+      canvas.style.width = (W / dpr) + "px";
+      canvas.style.height = (H / dpr) + "px";
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, W, H);
+      return;
+    } else if (msgType === 0x05) {
+      // Clipboard text from remote: [0x05][utf8...]
+      remoteClipText = new TextDecoder().decode(buf.subarray(1));
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(remoteClipText).catch(function() {});
+      }
+      return;
+    } else if (msgType === 0x02) {
+      // Cursor update
+      var subtype = buf[1];
+      if (subtype === 0x00) {
+        // Null: hide cursor
+        canvas.style.cursor = "none";
+      } else if (subtype === 0x01) {
+        // Default: restore OS cursor
+        canvas.style.cursor = "default";
+      } else if (subtype === 0x02) {
+        // Shape: [0x02][0x02][idx:u16][hotX:u16][hotY:u16][w:u16][h:u16][rgba...]
+        if (buf.length < 12) return;
+        var idx = buf[2] | (buf[3] << 8);
+        var hotX = buf[4] | (buf[5] << 8);
+        var hotY = buf[6] | (buf[7] << 8);
+        var cw = buf[8] | (buf[9] << 8);
+        var ch = buf[10] | (buf[11] << 8);
+        var cdata = buf.subarray(12);
+        if (cdata.length < cw * ch * 4) return;
+
+        // Scale hotspot by DPR for CSS cursor positioning
+        var cssHotX = Math.round(hotX / dpr);
+        var cssHotY = Math.round(hotY / dpr);
+
+        // Create PNG via canvas
+        cursorCanvas.width = cw;
+        cursorCanvas.height = ch;
+        var cimg = new ImageData(new Uint8ClampedArray(cdata.buffer, cdata.byteOffset, cw * ch * 4), cw, ch);
+        cursorCtx.putImageData(cimg, 0, 0);
+        var url = cursorCanvas.toDataURL("image/png");
+        cursorCache[idx] = {url: url, hotX: cssHotX, hotY: cssHotY};
+        canvas.style.cursor = "url(" + url + ") " + cssHotX + " " + cssHotY + ", auto";
+      } else if (subtype === 0x03) {
+        // Cached: [0x02][0x03][idx:u16]
+        if (buf.length < 4) return;
+        var cidx = buf[2] | (buf[3] << 8);
+        var cached = cursorCache[cidx];
+        if (cached) {
+          canvas.style.cursor = "url(" + cached.url + ") " + cached.hotX + " " + cached.hotY + ", auto";
+        }
+      }
+    } else if (msgType === 0x06) {
+      // Audio PCM: [0x06][channels:u16 LE][rate:u32 LE][bps:u16 LE][pcm data...]
+      if (buf.length < 10) return;
+      var channels = buf[1] | (buf[2] << 8);
+      // rate: u32 LE (use DataView to avoid sign issues with buf[6]<<24)
+      var dv = new DataView(ev.data);
+      var rate = dv.getUint32(3, true);
+      var bps = buf[7] | (buf[8] << 8);
+      var pcm = buf.subarray(9);
+
+      ensureAudioCtx(rate);
+
+      // Convert PCM bytes to float32 arrays
+      var left, right;
+      if (bps === 16) {
+        var frames = (pcm.length / (2 * channels)) | 0;
+        var i16;
+        if ((pcm.byteOffset & 1) === 0) {
+          i16 = new Int16Array(pcm.buffer, pcm.byteOffset, frames * channels);
+        } else {
+          var aligned = new ArrayBuffer(frames * channels * 2);
+          new Uint8Array(aligned).set(pcm.subarray(0, frames * channels * 2));
+          i16 = new Int16Array(aligned);
+        }
+        left = new Float32Array(frames);
+        right = new Float32Array(frames);
+        if (channels >= 2) {
+          for (var i = 0; i < frames; i++) {
+            left[i] = i16[i * channels] / 32768.0;
+            right[i] = i16[i * channels + 1] / 32768.0;
+          }
+        } else {
+          for (var i = 0; i < frames; i++) {
+            var s = i16[i] / 32768.0;
+            left[i] = s;
+            right[i] = s;
+          }
+        }
+      } else if (bps === 8) {
+        var frames = (pcm.length / channels) | 0;
+        left = new Float32Array(frames);
+        right = new Float32Array(frames);
+        if (channels >= 2) {
+          for (var i = 0; i < frames; i++) {
+            left[i] = (pcm[i * channels] - 128) / 128.0;
+            right[i] = (pcm[i * channels + 1] - 128) / 128.0;
+          }
+        } else {
+          for (var i = 0; i < frames; i++) {
+            var s = (pcm[i] - 128) / 128.0;
+            left[i] = s;
+            right[i] = s;
+          }
+        }
+      }
+
+      if (!left) return;
+
+      if (audioUseWorklet && audioNode) {
+        // Post to AudioWorklet — transfer buffers for zero-copy
+        audioNode.port.postMessage(
+          {left: left, right: right},
+          [left.buffer, right.buffer]
+        );
+      } else if (audioRingL) {
+        // ScriptProcessor fallback: write to main-thread ring buffer
+        var wp = audioWritePos;
+        for (var i = 0; i < left.length; i++) {
+          var idx = wp & audioRingMask;
+          audioRingL[idx] = left[i];
+          audioRingR[idx] = right[i];
+          wp++;
+        }
+        audioWritePos = wp & audioRingMask;
+        var avail = (audioWritePos - audioReadPos) & audioRingMask;
+        if (avail > audioRingSize - 8192) {
+          audioReadPos = (audioWritePos - 22050) & audioRingMask;
+        }
+      }
+    } else if (msgType === 0x07) {
+      // Audio input format notification: [0x07][channels:u16][rate:u32][bps:u16][bufMs:u16]
+      if (buf.length < 9) return;
+      var micCh = buf[1] | (buf[2] << 8);
+      var micDv = new DataView(ev.data);
+      var micRate = micDv.getUint32(3, true);
+      var micBps = buf[7] | (buf[8] << 8);
+      var bufMs = buf.length >= 11 ? (buf[9] | (buf[10] << 8)) : 0;
+      if (micCh === 0 && micRate === 0 && micBps === 0) {
+        stopMic();
+      } else {
+        startMic(micCh, micRate, micBps, bufMs);
+      }
+    }
+  };
+
+  // Keyboard mode: "scancode" (default) or "unicode"
+  var kbMode = params.get("kb") || "scancode";
+
+  // Keyboard input: [0x01][scancode:u16 LE][flags:u16 LE]
+  var scancodeMap = {
+    "Escape": 0x01,
+    "Digit1": 0x02, "Digit2": 0x03, "Digit3": 0x04, "Digit4": 0x05,
+    "Digit5": 0x06, "Digit6": 0x07, "Digit7": 0x08, "Digit8": 0x09,
+    "Digit9": 0x0A, "Digit0": 0x0B,
+    "Minus": 0x0C, "Equal": 0x0D, "Backspace": 0x0E,
+    "Tab": 0x0F,
+    "KeyQ": 0x10, "KeyW": 0x11, "KeyE": 0x12, "KeyR": 0x13,
+    "KeyT": 0x14, "KeyY": 0x15, "KeyU": 0x16, "KeyI": 0x17,
+    "KeyO": 0x18, "KeyP": 0x19,
+    "BracketLeft": 0x1A, "BracketRight": 0x1B, "Enter": 0x1C,
+    "ControlLeft": 0x1D,
+    "KeyA": 0x1E, "KeyS": 0x1F, "KeyD": 0x20, "KeyF": 0x21,
+    "KeyG": 0x22, "KeyH": 0x23, "KeyJ": 0x24, "KeyK": 0x25,
+    "KeyL": 0x26,
+    "Semicolon": 0x27, "Quote": 0x28, "Backquote": 0x29,
+    "ShiftLeft": 0x2A, "Backslash": 0x2B,
+    "KeyZ": 0x2C, "KeyX": 0x2D, "KeyC": 0x2E, "KeyV": 0x2F,
+    "KeyB": 0x30, "KeyN": 0x31, "KeyM": 0x32,
+    "Comma": 0x33, "Period": 0x34, "Slash": 0x35,
+    "ShiftRight": 0x36, "NumpadMultiply": 0x37,
+    "AltLeft": 0x38, "Space": 0x39, "CapsLock": 0x3A,
+    "F1": 0x3B, "F2": 0x3C, "F3": 0x3D, "F4": 0x3E,
+    "F5": 0x3F, "F6": 0x40, "F7": 0x41, "F8": 0x42,
+    "F9": 0x43, "F10": 0x44,
+    "NumLock": 0x45, "ScrollLock": 0x46,
+    "Numpad7": 0x47, "Numpad8": 0x48, "Numpad9": 0x49,
+    "NumpadSubtract": 0x4A,
+    "Numpad4": 0x4B, "Numpad5": 0x4C, "Numpad6": 0x4D,
+    "NumpadAdd": 0x4E,
+    "Numpad1": 0x4F, "Numpad2": 0x50, "Numpad3": 0x51,
+    "Numpad0": 0x52, "NumpadDecimal": 0x53,
+    "F12": 0x58, // F11 reserved for browser fullscreen toggle
+    "NumpadEnter": 0x1C, // extended
+    "ControlRight": 0x1D, // extended
+    "NumpadDivide": 0x35, // extended
+    "PrintScreen": 0x37, // extended
+    "AltRight": 0x38, // extended
+    "Home": 0x47, // extended
+    "ArrowUp": 0x48, // extended
+    "PageUp": 0x49, // extended
+    "ArrowLeft": 0x4B, // extended
+    "ArrowRight": 0x4D, // extended
+    "End": 0x4F, // extended
+    "ArrowDown": 0x50, // extended
+    "PageDown": 0x51, // extended
+    "Insert": 0x52, // extended
+    "Delete": 0x53, // extended
+    "MetaLeft": 0x5B, // extended
+    "MetaRight": 0x5C, // extended
+    "ContextMenu": 0x5D, // extended
+  };
+
+  // Keys that use extended scancode
+  var extendedKeys = new Set([
+    "NumpadEnter", "ControlRight", "NumpadDivide", "PrintScreen",
+    "AltRight", "Home", "ArrowUp", "PageUp", "ArrowLeft", "ArrowRight",
+    "End", "ArrowDown", "PageDown", "Insert", "Delete",
+    "MetaLeft", "MetaRight", "ContextMenu"
+  ]);
+
+  // Control/navigation keys that always use scancodes (even in unicode mode)
+  var controlKeyCodes = new Set([
+    "Escape", "Backspace", "Tab", "Enter", "NumpadEnter",
+    "ControlLeft", "ControlRight", "ShiftLeft", "ShiftRight",
+    "AltLeft", "AltRight", "MetaLeft", "MetaRight",
+    "CapsLock", "NumLock", "ScrollLock",
+    "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F12",
+    "PrintScreen", "Insert", "Delete", "Home", "End", "PageUp", "PageDown",
+    "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "ContextMenu"
+  ]);
+
+  function sendKey(code, pressed) {
+    var sc = scancodeMap[code];
+    if (sc === undefined) return;
+    var flags = 0;
+    if (!pressed) flags |= 0x8000; // KBDFLAG_RELEASE
+    if (extendedKeys.has(code)) flags |= 0x0100; // KBDFLAG_EXTENDED
+    var buf = new Uint8Array(5);
+    buf[0] = 0x01;
+    buf[1] = sc & 0xFF; buf[2] = (sc >> 8) & 0xFF;
+    buf[3] = flags & 0xFF; buf[4] = (flags >> 8) & 0xFF;
+    ws.send(buf);
+  }
+
+  function sendUnicode(codepoint, pressed) {
+    var flags = 0;
+    if (!pressed) flags |= 0x8000; // KBDFLAG_RELEASE
+    var buf = new Uint8Array(5);
+    buf[0] = 0x06;
+    buf[1] = codepoint & 0xFF; buf[2] = (codepoint >> 8) & 0xFF;
+    buf[3] = flags & 0xFF; buf[4] = (flags >> 8) & 0xFF;
+    ws.send(buf);
+  }
+
+  document.addEventListener("keydown", function(e) {
+    // Ctrl+V / Cmd+V: let browser fire paste event (handled below).
+    // Do NOT preventDefault — that would suppress the paste event.
+    if (e.code === "KeyV" && (e.ctrlKey || e.metaKey)) {
+      return;
+    }
+    // macOS: Cmd+C → send Ctrl+C to remote (Cmd=Meta=Win on Windows).
+    // Don't preventDefault — let the browser copy event fire for local clipboard.
+    if (isMac && e.metaKey && e.code === "KeyC") {
+      sendKey("ControlLeft", true);
+      sendKey("KeyC", true);
+      sendKey("KeyC", false);
+      sendKey("ControlLeft", false);
+      return;
+    }
+    // macOS: suppress bare Meta (Cmd) keydown — if it's part of Cmd+C/V the
+    // handlers above already sent Ctrl. Lone Cmd press does nothing useful.
+    if (isMac && (e.code === "MetaLeft" || e.code === "MetaRight")) {
+      e.preventDefault();
+      return;
+    }
+    // F11: don't send to RDP
+    if (e.code === "F11") {
+      return;
+    }
+    e.preventDefault();
+    if (kbMode === "unicode" && !controlKeyCodes.has(e.code) && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      // In unicode mode, send printable characters via unicode events.
+      // e.key is the character produced by the current keyboard layout.
+      if (e.key.length === 1) {
+        var cp = e.key.charCodeAt(0);
+        sendUnicode(cp, true);
+        sendUnicode(cp, false);
+      }
+      return;
+    }
+    sendKey(e.code, true);
+  });
+
+  // Copy event (macOS fallback): when navigator.clipboard.writeText() fails
+  // (Safari/Firefox), inject stored remote clipboard text on user Cmd+C.
+  if (isMac) {
+    document.addEventListener("copy", function(e) {
+      if (remoteClipText) {
+        e.preventDefault();
+        e.clipboardData.setData("text/plain", remoteClipText);
+      }
+    });
+  }
+
+  // Paste event: browser provides clipboard data without permission prompt
+  document.addEventListener("paste", function(e) {
+    e.preventDefault();
+    var text = (e.clipboardData || window.clipboardData).getData("text/plain");
+    if (text && ws.readyState === WebSocket.OPEN) {
+      var encoded = new TextEncoder().encode(text);
+      var msg = new Uint8Array(1 + encoded.length);
+      msg[0] = 0x05;
+      msg.set(encoded, 1);
+      ws.send(msg);
+    }
+    // Send paste keystroke to remote.
+    // Linux: Ctrl is already held from keydown handler, just send V↓.
+    // macOS: Cmd was suppressed, send full Ctrl+V sequence.
+    if (isMac) {
+      sendKey("ControlLeft", true);
+      sendKey("KeyV", true);
+      sendKey("KeyV", false);
+      sendKey("ControlLeft", false);
+    } else {
+      sendKey("KeyV", true);
+    }
+  });
+  document.addEventListener("keyup", function(e) {
+    if (e.code === "F11") return;
+    // macOS: suppress Meta (Cmd) release — we never sent it as Win key.
+    if (isMac && (e.code === "MetaLeft" || e.code === "MetaRight")) return;
+    e.preventDefault();
+    if (kbMode === "unicode" && !controlKeyCodes.has(e.code) && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      // In unicode mode, key release for printable chars already sent above
+      return;
+    }
+    sendKey(e.code, false);
+  });
+
+  // Mouse input: [0x02][x:u16 LE][y:u16 LE][buttons:u16 LE]
+  var mouseButtons = 0;
+
+  function sendMouse(x, y) {
+    var buf = new Uint8Array(7);
+    buf[0] = 0x02;
+    buf[1] = x & 0xFF; buf[2] = (x >> 8) & 0xFF;
+    buf[3] = y & 0xFF; buf[4] = (y >> 8) & 0xFF;
+    var flags = 0x0800 | mouseButtons; // PTRFLAGS_MOVE
+    buf[5] = flags & 0xFF; buf[6] = (flags >> 8) & 0xFF;
+    ws.send(buf);
+  }
+
+  canvas.addEventListener("mousemove", function(e) {
+    var rect = canvas.getBoundingClientRect();
+    var x = Math.round((e.clientX - rect.left) * (W / rect.width));
+    var y = Math.round((e.clientY - rect.top) * (H / rect.height));
+    sendMouse(x, y);
+  });
+
+  canvas.addEventListener("mousedown", function(e) {
+    e.preventDefault();
+    var rect = canvas.getBoundingClientRect();
+    var x = Math.round((e.clientX - rect.left) * (W / rect.width));
+    var y = Math.round((e.clientY - rect.top) * (H / rect.height));
+    var btn = 0;
+    if (e.button === 0) btn = 0x1000; // PTRFLAGS_BUTTON1
+    else if (e.button === 2) btn = 0x2000; // PTRFLAGS_BUTTON2
+    else if (e.button === 1) btn = 0x4000; // PTRFLAGS_BUTTON3
+    mouseButtons = btn;
+    var flags = 0x8000 | btn; // PTRFLAGS_DOWN | button
+    var buf = new Uint8Array(7);
+    buf[0] = 0x02;
+    buf[1] = x & 0xFF; buf[2] = (x >> 8) & 0xFF;
+    buf[3] = y & 0xFF; buf[4] = (y >> 8) & 0xFF;
+    buf[5] = flags & 0xFF; buf[6] = (flags >> 8) & 0xFF;
+    ws.send(buf);
+  });
+
+  canvas.addEventListener("mouseup", function(e) {
+    e.preventDefault();
+    var rect = canvas.getBoundingClientRect();
+    var x = Math.round((e.clientX - rect.left) * (W / rect.width));
+    var y = Math.round((e.clientY - rect.top) * (H / rect.height));
+    var btn = 0;
+    if (e.button === 0) btn = 0x1000;
+    else if (e.button === 2) btn = 0x2000;
+    else if (e.button === 1) btn = 0x4000;
+    mouseButtons = 0;
+    // Release: button flag without PTRFLAGS_DOWN
+    var flags = btn;
+    var buf = new Uint8Array(7);
+    buf[0] = 0x02;
+    buf[1] = x & 0xFF; buf[2] = (x >> 8) & 0xFF;
+    buf[3] = y & 0xFF; buf[4] = (y >> 8) & 0xFF;
+    buf[5] = flags & 0xFF; buf[6] = (flags >> 8) & 0xFF;
+    ws.send(buf);
+  });
+
+  canvas.addEventListener("wheel", function(e) {
+    e.preventDefault();
+    var rect = canvas.getBoundingClientRect();
+    var x = Math.round((e.clientX - rect.left) * (W / rect.width));
+    var y = Math.round((e.clientY - rect.top) * (H / rect.height));
+    var delta = Math.round(-e.deltaY / 100) || (e.deltaY < 0 ? 1 : -1);
+    var horiz = 0;
+    if (e.deltaX !== 0 && e.deltaY === 0) {
+      delta = Math.round(-e.deltaX / 100) || (e.deltaX < 0 ? 1 : -1);
+      horiz = 1;
+    }
+    var buf = new Uint8Array(8);
+    buf[0] = 0x03;
+    buf[1] = x & 0xFF; buf[2] = (x >> 8) & 0xFF;
+    buf[3] = y & 0xFF; buf[4] = (y >> 8) & 0xFF;
+    // delta as signed i16 LE
+    var d16 = delta & 0xFFFF;
+    buf[5] = d16 & 0xFF; buf[6] = (d16 >> 8) & 0xFF;
+    buf[7] = horiz;
+    ws.send(buf);
+  }, {passive: false});
+
+  canvas.addEventListener("contextmenu", function(e) { e.preventDefault(); });
+
+  // Dynamic resize: detect window resize with 200ms debounce
+  var resizeTimer = null;
+  window.addEventListener("resize", function() {
+    if (resizeTimer) clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function() {
+      var newW = Math.round(window.innerWidth * dpr);
+      var newH = Math.round(window.innerHeight * dpr);
+      if (newW === W && newH === H) return;
+      if (ws.readyState !== WebSocket.OPEN) return;
+      // Send resize message: [0x04][w:u16 LE][h:u16 LE]
+      var buf = new Uint8Array(5);
+      buf[0] = 0x04;
+      buf[1] = newW & 0xFF; buf[2] = (newW >> 8) & 0xFF;
+      buf[3] = newH & 0xFF; buf[4] = (newH >> 8) & 0xFF;
+      ws.send(buf);
+      // Update local dimensions and resize canvas
+      W = newW;
+      H = newH;
+      canvas.width = W;
+      canvas.height = H;
+      canvas.style.width = (W / dpr) + "px";
+      canvas.style.height = (H / dpr) + "px";
+    }, 200);
+  });
+})();
+</script>
+</body>
+</html>
