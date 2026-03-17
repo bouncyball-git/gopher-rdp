@@ -79,7 +79,7 @@ go build -o gopher-rdp ./client
 
 ### Graphics Pipeline
 
-**RDPGFX (RDP 8.0+ Graphics Pipeline Extension)** — enabled by default (disable with `-gfx-off`):
+**RDPGFX (RDP 8.0+ Graphics Pipeline Extension)** — enabled by default (disable with `-no-gfx`):
 - Capability versions 8.0, 8.1, 10.0–10.7 with AVC/H.264 pass-through (web viewer only, disable with `-no-avc`)
 - RemoteFX Progressive codec with tile caching and DWT extrapolation
 - ClearCodec with residual, band, and subcodec layers plus vbar caching
@@ -550,7 +550,7 @@ var (
 | `-depth` | 32 | Color depth: 8, 15, 16, 24, or 32 |
 | `-desktop-scale` | 0 | DPI zoom percent (100/125/150/175/200/225/250/300/350/400/450/500, 0 = off) |
 | `-device-scale` | 0 | Physical DPI tier (100, 140, or 180) |
-| `-gfx-off` | false | Disable RDPGFX graphics pipeline (EGFX) |
+| `-no-gfx` | false | Disable RDPGFX graphics pipeline (EGFX) |
 | `-no-avc` | false | Disable H.264/AVC codec (force RemoteFX/ClearCodec) |
 | `-keyboard` | scancode | Keyboard input mode: `scancode` (remote layout) or `unicode` (local layout) |
 | `-gui [WxH]` | | Graphical desktop viewer (default 1600x900) |
@@ -585,7 +585,7 @@ Pass a flag to toggle its default. Theming, cursors, and font smoothing are on b
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-clipboard-off` | false | Disable clipboard redirection |
+| `-no-clipboard` | false | Disable clipboard redirection |
 | `-audio-out [opts]` | no audio | Audio output. Omit = no audio at all. `remote` = play on server. Default suboptions: `stereo,hirate,15ms`. Other suboptions: `mono`, `lorate`, `Nms`, `pcm`, Hz value |
 | `-audio-in [opts]` | disabled | Audio input (default `mono,lorate,5ms`, `-web` only). Same suboptions as `-audio-out` |
 | `-drive name:/path` | | Share local directory as network drive (repeatable). Append `:ro` for read-only |

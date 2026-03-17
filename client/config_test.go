@@ -51,8 +51,8 @@ func TestParseConfigFile(t *testing.T) {
 		},
 		{
 			name:    "bare-bool flags",
-			content: "admin\nclipboard-off\ngfx-off false\n",
-			want:    []string{"-admin", "-clipboard-off"},
+			content: "admin\nno-clipboard\nno-gfx false\n",
+			want:    []string{"-admin", "-no-clipboard"},
 		},
 		{
 			name:    "repeatable flags",

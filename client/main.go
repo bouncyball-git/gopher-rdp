@@ -547,8 +547,8 @@ var isToggleFlag = map[string]bool{
 
 // isBareBoolFlag returns true for standard flag.Bool flags.
 var isBareBoolFlag = map[string]bool{
-	"clipboard-off": true, "admin": true,
-	"gfx-off": true, "no-avc": true,
+	"no-clipboard": true, "admin": true,
+	"no-gfx": true, "no-avc": true,
 }
 
 // parseConfigFile reads a config file and returns synthetic CLI args.
@@ -646,7 +646,7 @@ func main() {
 	flag.Var(&toggle{&fontSmooth}, "font-smoothing", "Toggle ClearType font smoothing")
 	flag.Var(&toggle{&desktopComp}, "desktop-composition", "Toggle desktop composition (Aero Glass)")
 	allExp := flag.Bool("enable-all-visuals", false, "Enable all visual effects (toggle individual flags to exclude)")
-	clipboardOff := flag.Bool("clipboard-off", false, "Disable clipboard redirection")
+	noClipboard := flag.Bool("no-clipboard", false, "Disable clipboard redirection")
 	var audioOut audioFlag
 	audioOut.cfg = rdp.AudioConfig{BufMs: 15, Stereo: true, MinRate: 44100}
 	flag.Var(&audioOut, "audio-out", "Audio output: remote, or stereo,mono,hirate,lorate,Nms,pcm,Hz (default stereo,hirate,15ms)")
@@ -672,7 +672,7 @@ func main() {
 	reconnectAttempts := flag.Int("reconnect-attempts", 0, "Max reconnect attempts (0 = unlimited)")
 	desktopScale := flag.Int("desktop-scale", 0, "DPI scale: 100/125/150/175/200/225/250/300/350/400/450/500 (0 to disable)")
 	deviceScale := flag.Int("device-scale", 0, "Device scale factor (100, 140, or 180)")
-	gfxOff := flag.Bool("gfx-off", false, "Disable RDPGFX graphics pipeline (EGFX)")
+	noGfx := flag.Bool("no-gfx", false, "Disable RDPGFX graphics pipeline (EGFX)")
 	noAvc := flag.Bool("no-avc", false, "Disable H.264/AVC codec in EGFX (force RemoteFX/ClearCodec)")
 	keyboard := flag.String("keyboard", "scancode", "Keyboard input mode: scancode or unicode")
 	var guiFlag optionalString
@@ -710,7 +710,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  -desktop-scale int       DPI zoom percent, 100-500 (default 0 = off)\n")
 		fmt.Fprintf(os.Stderr, "  -device-scale int        Physical DPI tier: 100=standard, 140=high, 180=very high\n")
 		fmt.Fprintf(os.Stderr, "                           (used with -desktop-scale for server-side UI scaling)\n")
-		fmt.Fprintf(os.Stderr, "  -gfx-off                 Disable RDPGFX graphics pipeline (EGFX)\n")
+		fmt.Fprintf(os.Stderr, "  -no-gfx                  Disable RDPGFX graphics pipeline (EGFX)\n")
 		fmt.Fprintf(os.Stderr, "  -no-avc                  Disable H.264/AVC codec (force RemoteFX/ClearCodec)\n")
 		fmt.Fprintf(os.Stderr, "  -keyboard string         Keyboard input mode: scancode or unicode (default scancode)\n")
 		fmt.Fprintf(os.Stderr, "                           scancode = physical keys (remote layout determines chars)\n")
@@ -733,7 +733,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  -desktop-composition     Toggle desktop composition / Aero Glass (default off)\n")
 		fmt.Fprintf(os.Stderr, "  -enable-all-visuals      Enable all visual effects\n")
 		fmt.Fprintf(os.Stderr, "\nRedirect (all on by default):\n")
-		fmt.Fprintf(os.Stderr, "  -clipboard-off           Disable clipboard redirection\n")
+		fmt.Fprintf(os.Stderr, "  -no-clipboard            Disable clipboard redirection\n")
 		fmt.Fprintf(os.Stderr, "  -audio-out [opts]        Audio output (omit = no audio at all)\n")
 		fmt.Fprintf(os.Stderr, "                           opts: remote, or stereo,mono,hirate,lorate,Nms,pcm,Hz\n")
 		fmt.Fprintf(os.Stderr, "  -audio-in [opts]         Audio input (default mono,lorate,5ms, -web only)\n")
@@ -1036,7 +1036,7 @@ func main() {
 		DeviceScaleFactor:    uint32(*deviceScale),
 		Cookie:               *cookie,
 		ConsoleSession:       *admin,
-		Clipboard:            !*clipboardOff,
+		Clipboard:            !*noClipboard,
 		AudioOut:             audioOut.config(),
 		AudioIn:              audioIn.config(),
 		RemoteAudio:          audioOut.remote,
@@ -1053,7 +1053,7 @@ func main() {
 		CursorSettings:       cursorSettings,
 		FontSmoothing:        fontSmooth,
 		DesktopComposition:   desktopComp,
-		GFX:                  !*gfxOff,
+		GFX:                  !*noGfx,
 		NoAVC:                *noAvc,
 		KeyboardMode:         kbMode,
 		HeartbeatTimeout:     time.Duration(*heartbeat) * time.Second,
