@@ -43,6 +43,7 @@ import (
 	"gopher-rdp/protocol/nla"
 
 	"gopher-rdp/protocol/audin"
+	"gopher-rdp/protocol/rdpecam"
 	"gopher-rdp/protocol/ber"
 	"gopher-rdp/protocol/caps"
 	"gopher-rdp/protocol/clearcodec"
@@ -197,6 +198,9 @@ type Client struct {
 
 	// Audio input (MS-RDPEAI)
 	audinHandler *audin.Handler
+
+	// Webcam redirection (MS-RDPECAM)
+	rdpecamHandler *rdpecam.Handler
 
 	// Disk drive redirection (MS-RDPEFS)
 	rdpdrHandler *rdpdr.Handler
@@ -1084,6 +1088,58 @@ func (c *Client) mcsConnect() error {
 			})
 			c.log.LogAttrs(context.Background(), slog.LevelInfo, "audio input DVC opened", slog.Int("id", int(audinID)))
 		}
+		// RDPECAM: webcam redirection enumeration channel (MS-RDPECAM)
+		if name == rdpecam.EnumChannelName && c.rdpecamHandler != nil {
+			enumID := ch.ID
+			c.rdpecamHandler.SetEnumSendFn(func(data []byte) error {
+				if c.dvc == nil {
+					return nil
+				}
+				return c.dvc.SendData(enumID, data)
+			})
+			ch.SetHandler(func(data []byte) {
+				if c.rdpecamHandler == nil {
+					return
+				}
+				c.rdpecamHandler.ProcessEnumPDU(data)
+			})
+			ch.OnOpen(func() {
+				if c.rdpecamHandler == nil {
+					return
+				}
+				c.rdpecamHandler.EnumChannelOpened()
+			})
+			c.log.LogAttrs(context.Background(), slog.LevelInfo, "RDPECAM enum DVC opened", slog.Int("id", int(enumID)))
+		}
+		// RDPECAM: per-device webcam channel (MS-RDPECAM)
+		if c.rdpecamHandler != nil && name == c.rdpecamHandler.DeviceID() {
+			devID := ch.ID
+			c.rdpecamHandler.SetDevSendFn(devID, func(data []byte) error {
+				if c.dvc == nil {
+					return nil
+				}
+				return c.dvc.SendData(devID, data)
+			})
+			ch.SetHandler(func(data []byte) {
+				if c.rdpecamHandler == nil {
+					return
+				}
+				c.rdpecamHandler.ProcessDevPDU(devID, data)
+			})
+			ch.OnOpen(func() {
+				if c.rdpecamHandler == nil {
+					return
+				}
+				c.rdpecamHandler.DevChannelOpened(devID)
+			})
+			ch.OnClose(func() {
+				if c.rdpecamHandler == nil {
+					return
+				}
+				c.rdpecamHandler.RemoveDevSendFn(devID)
+			})
+			c.log.LogAttrs(context.Background(), slog.LevelInfo, "RDPECAM device DVC opened", slog.Int("id", int(devID)))
+		}
 		// URBDRC: USB device redirection (MS-RDPEUSB)
 		if name == urbdrc.ChannelName && c.urbdrcHandler != nil {
 			chID := ch.ID
@@ -1199,6 +1255,11 @@ func (c *Client) mcsConnect() error {
 				c.onAudioInputClose()
 			}
 		})
+	}
+
+	// Initialize RDPECAM (webcam redirection) handler
+	if c.opts.Camera {
+		c.rdpecamHandler = rdpecam.NewHandler(c.opts.Logger.With("component", "RDPECAM"), "gopher-rdp Camera")
 	}
 
 	// Initialize rdpdr handler on the "rdpdr" static channel
@@ -2322,6 +2383,10 @@ func (c *Client) resetForReconnect() {
 	c.dispHandler = nil
 	c.rdpsndHandler = nil
 	c.audinHandler = nil
+	if c.rdpecamHandler != nil {
+		c.rdpecamHandler.Stop()
+	}
+	c.rdpecamHandler = nil
 	if c.rdpdrHandler != nil {
 		c.rdpdrHandler.Close()
 	}
@@ -5102,6 +5167,18 @@ func (c *Client) AudioInputFormat() (audin.AudioFormat, bool) {
 	return c.audinHandler.ActiveFormat(), true
 }
 
+// CameraHandler returns the RDPECAM handler, or nil if camera is not enabled.
+func (c *Client) CameraHandler() *rdpecam.Handler {
+	return c.rdpecamHandler
+}
+
+// SendCameraSample delivers an H.264 NAL unit from the browser to the RDPECAM handler.
+func (c *Client) SendCameraSample(nalData []byte) {
+	if c.rdpecamHandler != nil {
+		c.rdpecamHandler.SendSample(nalData)
+	}
+}
+
 // SetClipboardEnabled toggles clipboard forwarding at runtime. When disabled
 // the protocol channel stays alive but no data is exchanged. When re-enabled,
 // a fresh format list is sent to the server.
@@ -5356,6 +5433,9 @@ func (c *Client) Close() error {
 
 	if c.egfxHandler != nil {
 		c.egfxHandler.Close()
+	}
+	if c.rdpecamHandler != nil {
+		c.rdpecamHandler.Stop()
 	}
 	if c.urbdrcHandler != nil {
 		c.urbdrcHandler.Close()

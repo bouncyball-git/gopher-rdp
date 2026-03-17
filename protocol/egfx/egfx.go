@@ -164,9 +164,9 @@ type Handler struct {
 	done  chan struct{} // closed by Close() to stop the ack goroutine
 
 	// Reusable buffers
-	decompBuf   []byte // ZGFX decompression output
-	codecBuf    []byte // codec decompression output
-	blitTmpBuf  []byte // temporary buffer for overlap-safe surface-to-surface blit
+	decompBuf    []byte // ZGFX decompression output
+	codecBuf     []byte // codec decompression output
+	blitTmpBuf   []byte // temporary buffer for overlap-safe surface-to-surface blit
 	callbackBuf []byte // reusable buffer for onBitmap callback data
 
 }
@@ -560,7 +560,8 @@ func (h *Handler) handleMapSurfaceToScaledOutput(data []byte) {
 
 // parseAVC420Metablock parses an RDPGFX_AVC420_BITMAP_STREAM (MS-RDPEGFX 2.2.4.4).
 // Returns region rects, quant/quality values, and remaining NAL unit data.
-func parseAVC420Metablock(data []byte) ([]H264Region, []byte, error) {
+// If dst is non-nil and has sufficient capacity, it is reused to avoid allocation.
+func parseAVC420Metablock(dst []H264Region, data []byte) ([]H264Region, []byte, error) {
 	if len(data) < 4 {
 		return nil, nil, fmt.Errorf("AVC420 metablock too short: %d", len(data))
 	}
@@ -574,21 +575,26 @@ func parseAVC420Metablock(data []byte) ([]H264Region, []byte, error) {
 		return nil, nil, fmt.Errorf("AVC420 metablock truncated: need %d, have %d", need, len(data)-off)
 	}
 
-	regions := make([]H264Region, numRegions)
-	for i := range regions {
-		regions[i].Left = binary.LittleEndian.Uint16(data[off:])
-		regions[i].Top = binary.LittleEndian.Uint16(data[off+2:])
-		regions[i].Right = binary.LittleEndian.Uint16(data[off+4:])
-		regions[i].Bottom = binary.LittleEndian.Uint16(data[off+6:])
+	n := int(numRegions)
+	if cap(dst) >= n {
+		dst = dst[:n]
+	} else {
+		dst = make([]H264Region, n)
+	}
+	for i := range dst {
+		dst[i].Left = binary.LittleEndian.Uint16(data[off:])
+		dst[i].Top = binary.LittleEndian.Uint16(data[off+2:])
+		dst[i].Right = binary.LittleEndian.Uint16(data[off+4:])
+		dst[i].Bottom = binary.LittleEndian.Uint16(data[off+6:])
 		off += 8
 	}
-	for i := range regions {
-		regions[i].QPVal = data[off]
-		regions[i].QualityVal = data[off+1]
+	for i := range dst {
+		dst[i].QPVal = data[off]
+		dst[i].QualityVal = data[off+1]
 		off += 2
 	}
 
-	return regions, data[off:], nil
+	return dst, data[off:], nil
 }
 
 // parseAVC444 parses an RDPGFX_AVC444_BITMAP_STREAM (MS-RDPEGFX 2.2.4.5).
@@ -621,11 +627,11 @@ func parseAVC444(data []byte, surfID uint16, left, top, right, bottom int) ([]*H
 		stream1 := rest[:cbAvc420First]
 		stream2 := rest[cbAvc420First:]
 
-		regions1, nal1, err := parseAVC420Metablock(stream1)
+		regions1, nal1, err := parseAVC420Metablock(nil, stream1)
 		if err != nil {
 			return nil, fmt.Errorf("AVC444 luma metablock: %w", err)
 		}
-		regions2, nal2, err := parseAVC420Metablock(stream2)
+		regions2, nal2, err := parseAVC420Metablock(nil, stream2)
 		if err != nil {
 			return nil, fmt.Errorf("AVC444 chroma metablock: %w", err)
 		}
@@ -639,7 +645,7 @@ func parseAVC444(data []byte, surfID uint16, left, top, right, bottom int) ([]*H
 		}, nil
 
 	case 1: // luma only
-		regions, nal, err := parseAVC420Metablock(rest)
+		regions, nal, err := parseAVC420Metablock(nil, rest)
 		if err != nil {
 			return nil, fmt.Errorf("AVC444 luma-only metablock: %w", err)
 		}
@@ -650,7 +656,7 @@ func parseAVC444(data []byte, surfID uint16, left, top, right, bottom int) ([]*H
 		}, nil
 
 	case 2: // chroma only
-		regions, nal, err := parseAVC420Metablock(rest)
+		regions, nal, err := parseAVC420Metablock(nil, rest)
 		if err != nil {
 			return nil, fmt.Errorf("AVC444 chroma-only metablock: %w", err)
 		}
@@ -671,6 +677,7 @@ func (h *Handler) handleStartFrame(data []byte) {
 	h.curFrameID = binary.LittleEndian.Uint32(data[4:8])
 	h.inFrame = true
 	h.frameDirtyRects = h.frameDirtyRects[:0]
+	clear(h.frameH264)
 	h.frameH264 = h.frameH264[:0]
 }
 
@@ -716,6 +723,7 @@ func (h *Handler) handleEndFrame(data []byte) {
 		h.onEndPaint()
 	}
 	h.frameDirtyRects = h.frameDirtyRects[:0]
+	clear(h.frameH264)
 	h.frameH264 = h.frameH264[:0]
 }
 
@@ -826,7 +834,7 @@ func (h *Handler) handleWireToSurface1(data []byte) {
 			h.log.LogAttrs(context.Background(), slog.LevelWarn, "AVC420 data but no H.264 callback set")
 			return
 		}
-		regions, nalData, err := parseAVC420Metablock(bitmapData)
+		regions, nalData, err := parseAVC420Metablock(nil, bitmapData)
 		if err != nil {
 			h.log.LogAttrs(context.Background(), slog.LevelError, "AVC420 parse error", slog.Any("err", err))
 			return
@@ -1097,6 +1105,7 @@ func (h *Handler) handleResetGraphics(data []byte) {
 	clear(h.outputMap)
 	h.progressive = rfx.NewDecoder(h.log)
 	h.frameDirtyRects = h.frameDirtyRects[:0]
+	clear(h.frameH264)
 	h.frameH264 = h.frameH264[:0]
 	h.inFrame = false
 	// Reset ClearCodec sequence number per MS-RDPEGFX 3.1.8.1.1.

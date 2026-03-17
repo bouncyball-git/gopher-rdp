@@ -60,6 +60,7 @@ type Options struct {
 	Parallels []ParallelRedirect // Redirect local parallel ports
 	Printers  []PrinterRedirect  // Redirect printers (save print jobs to files)
 	Smartcard  *SmartcardRedirect // Smartcard redirection (nil = disabled)
+	Camera     bool               // Webcam redirection via RDPECAM (web viewer only)
 	USBDevices []USBRedirect     // Redirect USB devices by VID/PID
 
 	// Session

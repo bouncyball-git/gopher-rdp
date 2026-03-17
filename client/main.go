@@ -548,7 +548,7 @@ var isToggleFlag = map[string]bool{
 // isBareBoolFlag returns true for standard flag.Bool flags.
 var isBareBoolFlag = map[string]bool{
 	"no-clipboard": true, "admin": true,
-	"no-gfx": true, "no-avc": true,
+	"no-gfx": true, "no-avc": true, "camera": true,
 }
 
 // parseConfigFile reads a config file and returns synthetic CLI args.
@@ -665,6 +665,7 @@ func main() {
 	flag.Var(&smartcardFlag, "smartcard", "Enable smartcard redirection (optional: socket path)")
 	var usbDevices usbFlag
 	flag.Var(&usbDevices, "usb", "Redirect USB device (repeatable): vid:pid (hex) or bus,addr (decimal)")
+	camera := flag.Bool("camera", false, "Enable webcam redirection via RDPECAM (web viewer only)")
 	admin := flag.Bool("admin", false, "Connect to the console (admin) session")
 	heartbeat := flag.Int("heartbeat", 10, "Heartbeat timeout in seconds, 0 to disable (default 10)")
 	autoReconnect := true
@@ -768,6 +769,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "                           Example: -usb 1234:5678\n")
 		fmt.Fprintf(os.Stderr, "  -usb bus,addr            Redirect USB device by bus number and address (decimal)\n")
 		fmt.Fprintf(os.Stderr, "                           Example: -usb 1,5 (bus 1, device address 5)\n")
+		fmt.Fprintf(os.Stderr, "  -camera                  Enable webcam redirection via RDPECAM (web viewer only)\n")
 		fmt.Fprintf(os.Stderr, "\nLogging (disabled by default):\n")
 		fmt.Fprintf(os.Stderr, "  -log [COMP,COMP,...]     Enable logging (default: all components, info, stderr)\n")
 		fmt.Fprintf(os.Stderr, "  -log-level string        Minimum level (default \"info\"):\n")
@@ -778,7 +780,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "                             error      failures affecting the session\n")
 		fmt.Fprintf(os.Stderr, "  -log-file [name.log]     Write logs to file (default gopher-rdp.log)\n")
 		fmt.Fprintf(os.Stderr, "\n  Components: RDP, TPKT, NLA, X224, MCS, SEC, LIC, PDU, FASTPATH, POINTER,\n")
-		fmt.Fprintf(os.Stderr, "    EGFX, CLEARCODEC, DVC, DISP, CLIPRDR, RDPSND, AUDIN, RDPDR, URBDRC, BITMAP, GUI, WEB\n")
+		fmt.Fprintf(os.Stderr, "    EGFX, CLEARCODEC, DVC, DISP, CLIPRDR, RDPSND, AUDIN, RDPDR, URBDRC, RDPECAM, BITMAP, GUI, WEB\n")
 		fmt.Fprintf(os.Stderr, "\n  Examples:\n")
 		fmt.Fprintf(os.Stderr, "    -log                          all components, info level, stderr\n")
 		fmt.Fprintf(os.Stderr, "    -log -log-level debug         all components, debug level\n")
@@ -1055,6 +1057,7 @@ func main() {
 		DesktopComposition:   desktopComp,
 		GFX:                  !*noGfx,
 		NoAVC:                *noAvc,
+		Camera:               *camera,
 		KeyboardMode:         kbMode,
 		HeartbeatTimeout:     time.Duration(*heartbeat) * time.Second,
 		AutoReconnect:        autoReconnect,

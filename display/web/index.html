@@ -376,6 +376,119 @@
     if (micIndicator) micIndicator.style.display = "none";
   }
 
+  // --- Camera capture (RDPECAM) ---
+  var camEncoder = null;
+  var camStream = null;
+  var camReader = null;
+  var camRunning = false;
+
+  function startCamera(width, height, fps) {
+    stopCamera();
+    if (typeof VideoEncoder === "undefined") {
+      console.warn("[cam] VideoEncoder not supported");
+      return;
+    }
+    camRunning = true;
+    var camFrameCount = 0;
+    var camKeyInterval = fps * 2; // keyframe every 2 seconds
+    navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: width }, height: { ideal: height }, frameRate: { ideal: fps } }
+    }).then(function(stream) {
+      if (!camRunning) { stream.getTracks().forEach(function(t) { t.stop(); }); return; }
+      camStream = stream;
+      var track = stream.getVideoTracks()[0];
+      var settings = track.getSettings();
+      var encW = settings.width || width;
+      var encH = settings.height || height;
+
+      camEncoder = new VideoEncoder({
+        output: function(chunk) {
+          var buf = new Uint8Array(1 + chunk.byteLength);
+          buf[0] = 0x0C; // wsMsgCameraData
+          chunk.copyTo(buf.subarray(1));
+          if (ws.readyState === 1) ws.send(buf.buffer);
+        },
+        error: function(e) { console.error("[cam] encoder error:", e); }
+      });
+      camEncoder.configure({
+        codec: "avc1.420028",
+        width: encW,
+        height: encH,
+        framerate: fps,
+        bitrate: encH >= 720 ? 1500000 : 700000,
+        latencyMode: "realtime",
+        avc: { format: "annexb" }
+      });
+
+      // Feed video frames to the encoder.
+      // Prefer MediaStreamTrackProcessor (Chrome 94+), fall back to
+      // HTMLVideoElement + requestVideoFrameCallback, then setInterval + canvas.
+      if (typeof MediaStreamTrackProcessor !== "undefined") {
+        var processor = new MediaStreamTrackProcessor({ track: track });
+        camReader = processor.readable.getReader();
+        (function readFrame() {
+          if (!camRunning) return;
+          camReader.read().then(function(result) {
+            if (result.done || !camRunning) { if (result.value) result.value.close(); return; }
+            var frame = result.value;
+            if (camEncoder && camEncoder.state === "configured") {
+              var isKey = (camFrameCount % camKeyInterval) === 0;
+              camEncoder.encode(frame, { keyFrame: isKey });
+              camFrameCount++;
+            }
+            frame.close();
+            readFrame();
+          }).catch(function(e) { console.error("[cam] readFrame error:", e); });
+        })();
+      } else {
+        // Fallback: render to hidden video + canvas, create VideoFrame manually
+        var vid = document.createElement("video");
+        vid.srcObject = stream;
+        vid.muted = true;
+        vid.play();
+        var camCanvas = document.createElement("canvas");
+        camCanvas.width = encW;
+        camCanvas.height = encH;
+        var camCtx = camCanvas.getContext("2d");
+
+        function grabFrame() {
+          if (!camRunning || !camEncoder || camEncoder.state !== "configured") return;
+          camCtx.drawImage(vid, 0, 0, encW, encH);
+          var frame = new VideoFrame(camCanvas, { timestamp: camFrameCount * (1000000 / fps) });
+          var isKey = (camFrameCount % camKeyInterval) === 0;
+          camEncoder.encode(frame, { keyFrame: isKey });
+          camFrameCount++;
+          frame.close();
+        }
+
+        if (vid.requestVideoFrameCallback) {
+          (function rvfc() {
+            if (!camRunning) return;
+            grabFrame();
+            vid.requestVideoFrameCallback(rvfc);
+          })();
+          // Kick off after video starts playing
+          vid.requestVideoFrameCallback(function() {});
+        } else {
+          // Last resort: setInterval
+          var camInterval = setInterval(function() {
+            if (!camRunning) { clearInterval(camInterval); return; }
+            grabFrame();
+          }, Math.round(1000 / fps));
+        }
+      }
+    }).catch(function(err) {
+      console.warn("[cam] getUserMedia failed:", err);
+    });
+  }
+
+  function stopCamera() {
+    camRunning = false;
+    if (camReader) { camReader.cancel().catch(function(){}); camReader = null; }
+    if (camEncoder && camEncoder.state !== "closed") { camEncoder.close(); camEncoder = null; }
+    if (camStream) { camStream.getTracks().forEach(function(t) { t.stop(); }); camStream = null; }
+  }
+
   // Set tab title from monitor params
   var monIdx = params.get("monitor");
   if (monIdx !== null) {
@@ -688,6 +801,19 @@
         stopMic();
       } else {
         startMic(micCh, micRate, micBps, bufMs);
+      }
+    } else if (msgType === 0x0B) {
+      // Camera control: [0x0B][subtype][params...]
+      if (buf.length < 2) return;
+      var camSubtype = buf[1];
+      if (camSubtype === 0x01 && buf.length >= 8) {
+        // Start capture: [0x0B][0x01][w:u16][h:u16][fps:u16]
+        var camW = buf[2] | (buf[3] << 8);
+        var camH = buf[4] | (buf[5] << 8);
+        var camFps = buf[6] | (buf[7] << 8);
+        startCamera(camW, camH, camFps);
+      } else if (camSubtype === 0x02) {
+        stopCamera();
       }
     } else if (msgType === 0x0A) {
       // H.264 frame: [0x0A][surfId:u16][mode:u8][left:u16][top:u16][right:u16][bottom:u16]

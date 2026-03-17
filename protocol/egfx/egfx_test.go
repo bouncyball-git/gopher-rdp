@@ -381,7 +381,7 @@ func TestParseAVC420Metablock(t *testing.T) {
 	off += 2
 	copy(data[off:], nalPayload)
 
-	regions, nal, err := parseAVC420Metablock(data)
+	regions, nal, err := parseAVC420Metablock(nil, data)
 	if err != nil {
 		t.Fatalf("parseAVC420Metablock error: %v", err)
 	}

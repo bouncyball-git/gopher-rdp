@@ -30,6 +30,8 @@ const (
 	wsMsgAudioInput      byte = 0x07 // audio input: server→client format notification or client→server PCM
 	wsMsgClipboardImage  byte = 0x09 // clipboard image: [0x09][png bytes...]
 	wsMsgH264            byte = 0x0A // H.264 frame: [0x0A][surfId:u16][mode:u8][destRect:8][regions...][nalData...]
+	wsMsgCameraCtrl      byte = 0x0B // server→browser: camera control [0x0B][subtype][params...]
+	wsMsgCameraData      byte = 0x0C // browser→server: camera H.264 [0x0C][nalData...]
 )
 
 // Cursor subtypes (second byte after wsMsgCursor).
@@ -453,6 +455,26 @@ func handleWS(w http.ResponseWriter, r *http.Request, client *rdp.Client, log *s
 		})
 	}
 
+	// Register RDPECAM webcam callbacks — notify browser to start/stop capture.
+	if cam := client.CameraHandler(); cam != nil {
+		cam.OnStartCapture(func(width, height, fps int) {
+			// Send camera start: [0x0B][0x01][w:u16][h:u16][fps:u8]
+			var buf [8]byte
+			buf[0] = wsMsgCameraCtrl
+			buf[1] = 0x01 // start
+			binary.LittleEndian.PutUint16(buf[2:4], uint16(width))
+			binary.LittleEndian.PutUint16(buf[4:6], uint16(height))
+			binary.LittleEndian.PutUint16(buf[6:8], uint16(fps))
+			lockedWriteWSFrame(conn, buf[:])
+			log.Info("camera start sent to browser", "width", width, "height", height, "fps", fps)
+		})
+		cam.OnStopCapture(func() {
+			// Send camera stop: [0x0B][0x02]
+			lockedWriteWSFrame(conn, []byte{wsMsgCameraCtrl, 0x02})
+			log.Info("camera stop sent to browser")
+		})
+	}
+
 	// Register resize callback — notify browser of confirmed server resize.
 	client.OnResize(func(newW, newH int) {
 		var buf [5]byte
@@ -709,6 +731,12 @@ func handleWS(w http.ResponseWriter, r *http.Request, client *rdp.Client, log *s
 			if err := client.SendAudioInput(pcm); err != nil {
 				log.Debug("SendAudioInput error", "error", err)
 			}
+
+		case 0x0C: // Camera H.264 data: [0x0C][nalData...]
+			if len(payload) < 2 {
+				continue
+			}
+			client.SendCameraSample(payload[1:])
 
 		default:
 			log.Warn("unknown input type", "type", fmt.Sprintf("0x%02X", payload[0]))

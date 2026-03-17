@@ -245,6 +245,7 @@ opts.USBDevices = []rdp.USBRedirect{
 | `Parallels` | `[]ParallelRedirect` | nil | Parallel port redirects (e.g. LPT1 → /dev/lp0) |
 | `Smartcard` | `*SmartcardRedirect` | nil | Smartcard redirection via pcsclite (nil = disabled) |
 | `USBDevices` | `[]USBRedirect` | nil | Raw USB device redirects by VID/PID, bus/addr, or auto (all zeros) |
+| `Camera` | `bool` | false | Enable webcam redirection via RDPECAM (web viewer only) |
 | `ConsoleSession` | `bool` | false | Admin/console session |
 | `Wallpaper` | `bool` | false | Show desktop wallpaper |
 | `FullWindowDrag` | `bool` | false | Window contents while dragging |
@@ -596,6 +597,7 @@ Pass a flag to toggle its default. Theming, cursors, and font smoothing are on b
 | `-usb auto` | | Redirect all newly inserted USB devices (HID, hub, audio, smartcard auto-excluded) |
 | `-usb vid:pid` | | Redirect USB device by vendor:product ID in hex (repeatable). Example: `-usb 1234:5678` |
 | `-usb bus,addr` | | Redirect USB device by bus number and address in decimal. Example: `-usb 1,5` |
+| `-camera` | false | Enable webcam redirection via RDPECAM (web viewer only) |
 
 **Audio suboption examples:**
 
@@ -663,7 +665,7 @@ printer Both:/tmp/print:ipp=http://127.0.0.1:631/printers/hp
 | `-log-level` | info | Minimum level: `all`/`trace`, `debug`, `info`, `warn`, `error` |
 | `-log-file [name]` | stderr | Write logs to file (default `gopher-rdp.log`) |
 
-Components: `RDP`, `TPKT`, `NLA`, `X224`, `MCS`, `SEC`, `LIC`, `PDU`, `FASTPATH`, `POINTER`, `EGFX`, `CLEARCODEC`, `DVC`, `DISP`, `CLIPRDR`, `RDPSND`, `AUDIN`, `RDPDR`, `URBDRC`, `BITMAP`, `GUI`, `WEB`
+Components: `RDP`, `TPKT`, `NLA`, `X224`, `MCS`, `SEC`, `LIC`, `PDU`, `FASTPATH`, `POINTER`, `EGFX`, `CLEARCODEC`, `DVC`, `DISP`, `CLIPRDR`, `RDPSND`, `AUDIN`, `RDPDR`, `URBDRC`, `RDPECAM`, `BITMAP`, `GUI`, `WEB`
 
 ### Profiling
 
