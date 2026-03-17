@@ -12,6 +12,7 @@ import (
 	rdp "gopher-rdp"
 	"gopher-rdp/display"
 	"gopher-rdp/protocol/audin"
+	"gopher-rdp/protocol/egfx"
 	"gopher-rdp/protocol/rdpsnd"
 )
 
@@ -28,6 +29,7 @@ const (
 	wsMsgAudio      byte = 0x06 // audio PCM: [0x06][channels:u16 LE][rate:u32 LE][bps:u16 LE][pcm data...]
 	wsMsgAudioInput      byte = 0x07 // audio input: server→client format notification or client→server PCM
 	wsMsgClipboardImage  byte = 0x09 // clipboard image: [0x09][png bytes...]
+	wsMsgH264            byte = 0x0A // H.264 frame: [0x0A][surfId:u16][mode:u8][destRect:8][regions...][nalData...]
 )
 
 // Cursor subtypes (second byte after wsMsgCursor).
@@ -148,6 +150,12 @@ func NewAutoWebHandler(opts *rdp.Options) (http.Handler, <-chan struct{}) {
 				http.Error(w, "RDP client error", http.StatusInternalServerError)
 				return
 			}
+			// Enable H.264 pass-through if the browser supports WebCodecs
+			// and NoAVC is not set. Must register before Connect() so the
+			// EGFX handler advertises AVC in CAPS_ADVERTISE.
+			if r.URL.Query().Get("avc") == "1" && !opts.NoAVC {
+				c.OnH264Frame(func(*egfx.H264Frame) {})
+			}
 			if err := c.Connect(); err != nil {
 				clientErr = err
 				clientMu.Unlock()
@@ -221,17 +229,21 @@ func handleWS(w http.ResponseWriter, r *http.Request, client *rdp.Client, log *s
 	// Channel for bitmap update batches. Each entry is a frame's worth of
 	// rects (or a single out-of-frame rect). Batching per frame prevents
 	// channel overflow during heavy repaints (resize, initial desktop).
+	avcMode := r.URL.Query().Get("avc") == "1"
+
 	bitmapCh := make(chan []bitmapMsg, 512)
 	cursorCh := make(chan cursorMsg, 64)
 	clipCh := make(chan string, 4)
 	clipImageCh := make(chan []byte, 4)
 	audioCh := make(chan []byte, 32) // pre-built WS frames with 10-byte header room
+	h264Ch := make(chan []byte, 64)  // pre-built WS frames with 10-byte header room
 	var closeOnce sync.Once
 	done := make(chan struct{})
 
 	// Frame-level batching: accumulate bitmap rects during an EGFX frame
 	// flush and send them as a single channel entry at EndPaint.
 	var frameBatch []bitmapMsg
+	var h264Batch [][]byte // pre-built WS frames for H.264, batched during paint
 	var inPaint bool
 	var dropped int
 
@@ -249,6 +261,7 @@ func handleWS(w http.ResponseWriter, r *http.Request, client *rdp.Client, log *s
 	client.OnBeginPaint(func() {
 		inPaint = true
 		frameBatch = frameBatch[:0]
+		h264Batch = h264Batch[:0]
 	})
 	client.OnEndPaint(func() {
 		inPaint = false
@@ -258,6 +271,13 @@ func handleWS(w http.ResponseWriter, r *http.Request, client *rdp.Client, log *s
 			batch := make([]bitmapMsg, len(frameBatch))
 			copy(batch, frameBatch)
 			sendBatch(batch)
+		}
+		for _, buf := range h264Batch {
+			select {
+			case h264Ch <- buf:
+			default:
+				log.Debug("H.264 frame dropped, channel full")
+			}
 		}
 	})
 
@@ -393,6 +413,46 @@ func handleWS(w http.ResponseWriter, r *http.Request, client *rdp.Client, log *s
 		sendAudioInputFormat(f)
 	}
 
+	// Register H.264 pass-through callback when browser supports WebCodecs.
+	if avcMode {
+		client.OnH264Frame(func(f *egfx.H264Frame) {
+			// Build WS frame: [10 hdr room][0x0A][surfId:u16][mode:u8][left:u16][top:u16][right:u16][bottom:u16]
+			//   [numRegions:u16][N × {left:u16,top:u16,right:u16,bottom:u16,qp:u8,quality:u8}][nalData...]
+			hdrLen := 1 + 2 + 1 + 8 + 2 + len(f.Regions)*10
+			payloadLen := hdrLen + len(f.NALData)
+			buf := make([]byte, 10+payloadLen)
+			off := 10
+			buf[off] = wsMsgH264
+			binary.LittleEndian.PutUint16(buf[off+1:], f.SurfaceID)
+			buf[off+3] = f.CodecMode
+			binary.LittleEndian.PutUint16(buf[off+4:], uint16(f.Left))
+			binary.LittleEndian.PutUint16(buf[off+6:], uint16(f.Top))
+			binary.LittleEndian.PutUint16(buf[off+8:], uint16(f.Right))
+			binary.LittleEndian.PutUint16(buf[off+10:], uint16(f.Bottom))
+			binary.LittleEndian.PutUint16(buf[off+12:], uint16(len(f.Regions)))
+			roff := off + 14
+			for _, reg := range f.Regions {
+				binary.LittleEndian.PutUint16(buf[roff:], reg.Left)
+				binary.LittleEndian.PutUint16(buf[roff+2:], reg.Top)
+				binary.LittleEndian.PutUint16(buf[roff+4:], reg.Right)
+				binary.LittleEndian.PutUint16(buf[roff+6:], reg.Bottom)
+				buf[roff+8] = reg.QPVal
+				buf[roff+9] = reg.QualityVal
+				roff += 10
+			}
+			copy(buf[roff:], f.NALData)
+			if inPaint {
+				h264Batch = append(h264Batch, buf)
+			} else {
+				select {
+				case h264Ch <- buf:
+				default:
+					log.Debug("H.264 frame dropped, channel full")
+				}
+			}
+		})
+	}
+
 	// Register resize callback — notify browser of confirmed server resize.
 	client.OnResize(func(newW, newH int) {
 		var buf [5]byte
@@ -431,6 +491,22 @@ func handleWS(w http.ResponseWriter, r *http.Request, client *rdp.Client, log *s
 			case abuf := <-audioCh:
 				if err := lockedWriteWSFrameDirect(conn, abuf, len(abuf)-10); err != nil {
 					log.Error("WebSocket audio write error", "error", err)
+					return
+				}
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	// H.264 send loop: dedicated goroutine for low-latency H.264 delivery.
+	go func() {
+		defer closeOnce.Do(func() { close(done) })
+		for {
+			select {
+			case buf := <-h264Ch:
+				if err := lockedWriteWSFrameDirect(conn, buf, len(buf)-10); err != nil {
+					log.Error("WebSocket H.264 write error", "error", err)
 					return
 				}
 			case <-done:

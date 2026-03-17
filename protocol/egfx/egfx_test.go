@@ -348,3 +348,249 @@ func TestWireToSurface1Uncompressed(t *testing.T) {
 		t.Fatalf("bitmap data = %d bytes, want %d", len(gotData), 2*2*4)
 	}
 }
+
+func TestParseAVC420Metablock(t *testing.T) {
+	// Build a metablock with 2 regions + some NAL data
+	numRegions := uint32(2)
+	nalPayload := []byte{0x00, 0x00, 0x00, 0x01, 0x67, 0xAA, 0xBB} // fake NAL with start code
+
+	size := 4 + int(numRegions)*8 + int(numRegions)*2 + len(nalPayload)
+	data := make([]byte, size)
+	binary.LittleEndian.PutUint32(data[0:4], numRegions)
+
+	off := 4
+	// Region 0: left=10, top=20, right=100, bottom=200
+	binary.LittleEndian.PutUint16(data[off:], 10)
+	binary.LittleEndian.PutUint16(data[off+2:], 20)
+	binary.LittleEndian.PutUint16(data[off+4:], 100)
+	binary.LittleEndian.PutUint16(data[off+6:], 200)
+	off += 8
+	// Region 1: left=0, top=0, right=50, bottom=50
+	binary.LittleEndian.PutUint16(data[off:], 0)
+	binary.LittleEndian.PutUint16(data[off+2:], 0)
+	binary.LittleEndian.PutUint16(data[off+4:], 50)
+	binary.LittleEndian.PutUint16(data[off+6:], 50)
+	off += 8
+	// Quant/quality for region 0
+	data[off] = 26   // qpVal
+	data[off+1] = 85 // qualityVal
+	off += 2
+	// Quant/quality for region 1
+	data[off] = 30
+	data[off+1] = 90
+	off += 2
+	copy(data[off:], nalPayload)
+
+	regions, nal, err := parseAVC420Metablock(data)
+	if err != nil {
+		t.Fatalf("parseAVC420Metablock error: %v", err)
+	}
+	if len(regions) != 2 {
+		t.Fatalf("regions = %d, want 2", len(regions))
+	}
+	if regions[0].Left != 10 || regions[0].Top != 20 || regions[0].Right != 100 || regions[0].Bottom != 200 {
+		t.Fatalf("region[0] = %+v, want 10,20,100,200", regions[0])
+	}
+	if regions[0].QPVal != 26 || regions[0].QualityVal != 85 {
+		t.Fatalf("region[0] qp=%d quality=%d, want 26,85", regions[0].QPVal, regions[0].QualityVal)
+	}
+	if regions[1].Left != 0 || regions[1].Right != 50 {
+		t.Fatalf("region[1] = %+v", regions[1])
+	}
+	if len(nal) != len(nalPayload) {
+		t.Fatalf("NAL data = %d bytes, want %d", len(nal), len(nalPayload))
+	}
+	for i, b := range nalPayload {
+		if nal[i] != b {
+			t.Fatalf("NAL[%d] = 0x%02X, want 0x%02X", i, nal[i], b)
+		}
+	}
+}
+
+func TestSendCapsAdvertiseAVCEnabled(t *testing.T) {
+	var sent []byte
+	h := NewHandler(func(data []byte) error {
+		sent = make([]byte, len(data))
+		copy(sent, data)
+		return nil
+	}, slog.New(slog.DiscardHandler))
+
+	h.SetAVCEnabled(true)
+	if err := h.SendCapsAdvertise(); err != nil {
+		t.Fatalf("SendCapsAdvertise error: %v", err)
+	}
+
+	// Same structure: 9 capsets
+	const numCaps = 9
+	const wantLen = 8 + 2 + numCaps*12
+	if len(sent) != wantLen {
+		t.Fatalf("sent %d bytes, want %d", len(sent), wantLen)
+	}
+
+	// v10.x caps should have flags=0 (AVC enabled), v8.1 should have AVC420_ENABLED
+	off := 10
+	for i := 0; i < 7; i++ { // v10.7 through v10.0
+		flags := binary.LittleEndian.Uint32(sent[off+8:])
+		if flags != 0 {
+			t.Fatalf("cap[%d] flags = 0x%08X, want 0 (AVC enabled)", i, flags)
+		}
+		off += 12
+	}
+	// v8.1: should have FlagAVC420Enabled
+	flags81 := binary.LittleEndian.Uint32(sent[off+8:])
+	if flags81 != FlagAVC420Enabled {
+		t.Fatalf("v8.1 flags = 0x%08X, want 0x%08X (AVC420_ENABLED)", flags81, FlagAVC420Enabled)
+	}
+	off += 12
+	// v8.0: flags=0
+	flags80 := binary.LittleEndian.Uint32(sent[off+8:])
+	if flags80 != 0 {
+		t.Fatalf("v8.0 flags = 0x%08X, want 0", flags80)
+	}
+}
+
+func TestWireToSurface1AVC420(t *testing.T) {
+	h := NewHandler(func([]byte) error { return nil }, slog.New(slog.DiscardHandler))
+
+	var gotFrame *H264Frame
+	h.OnH264Frame(func(f *H264Frame) {
+		gotFrame = f
+	})
+
+	// Create 100x100 surface
+	createData := make([]byte, 7)
+	binary.LittleEndian.PutUint16(createData[0:2], 1)
+	binary.LittleEndian.PutUint16(createData[2:4], 100)
+	binary.LittleEndian.PutUint16(createData[4:6], 100)
+	createData[6] = PixelFormatXRGB8888
+	h.handleCreateSurface(createData)
+
+	// Build AVC420 metablock: 1 region + fake NAL
+	numRegions := uint32(1)
+	nalPayload := []byte{0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x28} // SPS NAL
+	metaSize := 4 + 8 + 2 + len(nalPayload)
+	meta := make([]byte, metaSize)
+	binary.LittleEndian.PutUint32(meta[0:4], numRegions)
+	binary.LittleEndian.PutUint16(meta[4:], 0)   // left
+	binary.LittleEndian.PutUint16(meta[6:], 0)   // top
+	binary.LittleEndian.PutUint16(meta[8:], 100) // right
+	binary.LittleEndian.PutUint16(meta[10:], 100) // bottom
+	meta[12] = 26 // qpVal
+	meta[13] = 85 // qualityVal
+	copy(meta[14:], nalPayload)
+
+	// Build WireToSurface1 PDU
+	wire := make([]byte, 17+len(meta))
+	binary.LittleEndian.PutUint16(wire[0:2], 1)          // surfaceId
+	binary.LittleEndian.PutUint16(wire[2:4], CodecAVC420) // codecId
+	wire[4] = PixelFormatXRGB8888
+	binary.LittleEndian.PutUint16(wire[5:7], 0)   // left
+	binary.LittleEndian.PutUint16(wire[7:9], 0)   // top
+	binary.LittleEndian.PutUint16(wire[9:11], 100) // right
+	binary.LittleEndian.PutUint16(wire[11:13], 100) // bottom
+	binary.LittleEndian.PutUint32(wire[13:17], uint32(len(meta)))
+	copy(wire[17:], meta)
+
+	h.handleWireToSurface1(wire)
+
+	if gotFrame == nil {
+		t.Fatal("H264Frame callback not called")
+	}
+	if gotFrame.SurfaceID != 1 {
+		t.Fatalf("SurfaceID = %d, want 1", gotFrame.SurfaceID)
+	}
+	if gotFrame.CodecMode != 0 {
+		t.Fatalf("CodecMode = %d, want 0 (AVC420)", gotFrame.CodecMode)
+	}
+	if gotFrame.Left != 0 || gotFrame.Top != 0 || gotFrame.Right != 100 || gotFrame.Bottom != 100 {
+		t.Fatalf("destRect = %d,%d,%d,%d want 0,0,100,100", gotFrame.Left, gotFrame.Top, gotFrame.Right, gotFrame.Bottom)
+	}
+	if len(gotFrame.Regions) != 1 {
+		t.Fatalf("regions = %d, want 1", len(gotFrame.Regions))
+	}
+	if len(gotFrame.NALData) != len(nalPayload) {
+		t.Fatalf("NALData = %d bytes, want %d", len(gotFrame.NALData), len(nalPayload))
+	}
+
+	// Verify surface pixels are UNCHANGED (H.264 doesn't write to surface)
+	surf := h.surfaces[1]
+	// Surfaces are initialized to 0xFF (opaque white)
+	if surf.Data[0] != 0xFF || surf.Data[1] != 0xFF || surf.Data[2] != 0xFF {
+		t.Fatalf("surface pixel was modified by AVC420 — expected unchanged (0xFF)")
+	}
+}
+
+func TestAVC420FrameBatching(t *testing.T) {
+	h := NewHandler(func([]byte) error { return nil }, slog.New(slog.DiscardHandler))
+
+	var frames []*H264Frame
+	h.OnH264Frame(func(f *H264Frame) {
+		cp := *f
+		cp.NALData = make([]byte, len(f.NALData))
+		copy(cp.NALData, f.NALData)
+		frames = append(frames, &cp)
+	})
+
+	// Create surface
+	createData := make([]byte, 7)
+	binary.LittleEndian.PutUint16(createData[0:2], 1)
+	binary.LittleEndian.PutUint16(createData[2:4], 100)
+	binary.LittleEndian.PutUint16(createData[4:6], 100)
+	createData[6] = PixelFormatXRGB8888
+	h.handleCreateSurface(createData)
+
+	// Start frame
+	startData := make([]byte, 8)
+	binary.LittleEndian.PutUint32(startData[4:8], 1) // frameId
+	h.handleStartFrame(startData)
+
+	// Send two AVC420 WTS1 PDUs within the frame
+	for i := 0; i < 2; i++ {
+		meta := make([]byte, 4+8+2+4) // 1 region + 4 bytes fake NAL
+		binary.LittleEndian.PutUint32(meta[0:4], 1)
+		binary.LittleEndian.PutUint16(meta[4:], 0)
+		binary.LittleEndian.PutUint16(meta[6:], 0)
+		binary.LittleEndian.PutUint16(meta[8:], 50)
+		binary.LittleEndian.PutUint16(meta[10:], 50)
+		meta[12] = 26
+		meta[13] = 85
+		meta[14] = 0x00
+		meta[15] = 0x00
+		meta[16] = 0x01
+		meta[17] = byte(0x65 + i) // different NAL type per frame
+
+		wire := make([]byte, 17+len(meta))
+		binary.LittleEndian.PutUint16(wire[0:2], 1)
+		binary.LittleEndian.PutUint16(wire[2:4], CodecAVC420)
+		wire[4] = PixelFormatXRGB8888
+		binary.LittleEndian.PutUint16(wire[5:7], 0)
+		binary.LittleEndian.PutUint16(wire[7:9], 0)
+		binary.LittleEndian.PutUint16(wire[9:11], 50)
+		binary.LittleEndian.PutUint16(wire[11:13], 50)
+		binary.LittleEndian.PutUint32(wire[13:17], uint32(len(meta)))
+		copy(wire[17:], meta)
+		h.handleWireToSurface1(wire)
+	}
+
+	// Frames should NOT have been delivered yet (batched)
+	if len(frames) != 0 {
+		t.Fatalf("frames delivered before EndFrame: %d", len(frames))
+	}
+
+	// End frame
+	endData := make([]byte, 4)
+	binary.LittleEndian.PutUint32(endData[0:4], 1)
+	h.handleEndFrame(endData)
+	time.Sleep(50 * time.Millisecond) // allow async ACK
+
+	// Now both frames should have been delivered
+	if len(frames) != 2 {
+		t.Fatalf("frames after EndFrame = %d, want 2", len(frames))
+	}
+	if frames[0].NALData[3] != 0x65 {
+		t.Fatalf("frame[0] NAL type = 0x%02X, want 0x65", frames[0].NALData[3])
+	}
+	if frames[1].NALData[3] != 0x66 {
+		t.Fatalf("frame[1] NAL type = 0x%02X, want 0x66", frames[1].NALData[3])
+	}
+}

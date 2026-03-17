@@ -264,6 +264,7 @@ type Client struct {
 	// Callbacks
 	onBitmap        func(*BitmapUpdate)
 	onStridedBitmap func(x, y, w, h int, data []byte, stride int)
+	onH264Frame     func(*egfx.H264Frame) // H.264 pass-through callback
 	onBeginPaint func() // called before batch of display updates
 	onEndPaint   func() // called after batch of display updates
 	painting     bool   // true while inside beginPaint/endPaint (reentrant guard)
@@ -961,6 +962,12 @@ func (c *Client) mcsConnect() error {
 				return c.dvc.SendData(ch.ID, data)
 			}, c.opts.Logger.With("component", "EGFX"))
 			c.egfxHandler.SetClearCodecDecoder(clearcodec.New(c.opts.Logger.With("component", "CLEARCODEC")))
+			if c.onH264Frame != nil && !c.opts.NoAVC {
+				c.egfxHandler.SetAVCEnabled(true)
+				c.egfxHandler.OnH264Frame(func(f *egfx.H264Frame) {
+					c.onH264Frame(f)
+				})
+			}
 			c.egfxHandler.OnStridedBitmap(func(surfID uint16, x, y, w, h int, data []byte, stride int) {
 				if c.framebuf != nil {
 					c.framebuf.WriteRectStridedTopDown(x, y, w, h, data, stride)
@@ -4930,6 +4937,14 @@ func (c *Client) OnBitmap(fn func(*BitmapUpdate)) {
 // This is only called for GFX pipeline updates. Non-GFX updates still use OnBitmap.
 func (c *Client) OnStridedBitmap(fn func(x, y, w, h int, data []byte, stride int)) {
 	c.onStridedBitmap = fn
+}
+
+// OnH264Frame sets the callback for H.264 pass-through frames.
+// When set, the client advertises AVC support in EGFX capabilities
+// and forwards raw H.264 NAL units instead of decoding them.
+// Must be set before Connect().
+func (c *Client) OnH264Frame(fn func(*egfx.H264Frame)) {
+	c.onH264Frame = fn
 }
 
 // OnBeginPaint sets the callback invoked before a batch of display updates

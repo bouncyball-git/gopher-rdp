@@ -38,6 +38,7 @@ type Options struct {
 	DesktopScaleFactor uint32 // DPI scale percent (100–500, 0 = don't send)
 	DeviceScaleFactor  uint32 // Device scale (100, 140, or 180, 0 = don't send)
 	GFX                bool   // Enable RDPGFX graphics pipeline (EGFX)
+	NoAVC              bool   // Disable H.264/AVC codec (force RemoteFX/ClearCodec)
 
 	// Experience (visual effects)
 	Wallpaper           bool // Show desktop wallpaper

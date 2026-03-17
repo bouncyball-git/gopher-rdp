@@ -384,10 +384,105 @@
     document.title = monTitle;
   }
 
+  // H.264/WebCodecs support: detect capability and append to WS URL
+  var hasWebCodecs = typeof VideoDecoder !== "undefined";
+  var avcParam = hasWebCodecs ? "&avc=1" : "";
+
   // Connect WebSocket, passing physical resolution for RDP auto-sizing
   var proto = location.protocol === "https:" ? "wss:" : "ws:";
-  var ws = new WebSocket(proto + "//" + location.host + "/ws?w=" + W + "&h=" + H + "&monitor=" + (monIdx || "0"));
+  var ws = new WebSocket(proto + "//" + location.host + "/ws?w=" + W + "&h=" + H + "&monitor=" + (monIdx || "0") + avcParam);
   ws.binaryType = "arraybuffer";
+
+  // H.264 decoder state
+  var h264Decoder = null;
+  var h264Timestamp = 0;
+  var h264RectMap = {};    // timestamp → {destLeft, destTop, regions[]}
+  var h264GotKeyframe = false; // gate: drop deltas until first keyframe
+
+  function h264OutputCallback(frame) {
+    var ts = frame.timestamp;
+    var regions = h264RectMap[ts];
+    delete h264RectMap[ts];
+    if (!regions) {
+      frame.close();
+      return;
+    }
+    // The H.264 stream encodes the full surface (e.g. 1808x1136).
+    // Region rects are surface-absolute — they index directly into
+    // the decoded frame (same coordinate space) and paint at the
+    // same position on the canvas. No offset translation needed.
+    var fw = frame.displayWidth;
+    var fh = frame.displayHeight;
+    for (var i = 0; i < regions.length; i++) {
+      var r = regions[i];
+      var rw = r.right - r.left;
+      var rh = r.bottom - r.top;
+      if (r.left + rw > fw) rw = fw - r.left;
+      if (r.top + rh > fh) rh = fh - r.top;
+      if (rw > 0 && rh > 0) {
+        ctx.drawImage(frame,
+          r.left, r.top, rw, rh,
+          r.left, r.top, rw, rh);
+      }
+    }
+    frame.close();
+  }
+
+  function createH264Decoder() {
+    var dec = new VideoDecoder({
+      output: h264OutputCallback,
+      error: function(e) {
+        console.error("H.264 decoder error:", e);
+        if (h264Decoder === dec) {
+          h264Decoder = null;
+          h264GotKeyframe = false;
+        }
+      }
+    });
+    dec.configure({
+      codec: "avc1.4d0028",
+      optimizeForLatency: true
+    });
+    return dec;
+  }
+
+  function resetH264Decoder() {
+    if (h264Decoder && h264Decoder.state !== "closed") {
+      h264Decoder.close();
+    }
+    h264Decoder = null;
+    h264Timestamp = 0;
+    h264RectMap = {};
+    h264GotKeyframe = false;
+  }
+
+  // Scan H.264 NAL units for keyframe (IDR=5 or SPS=7)
+  function isH264Keyframe(nalData) {
+    var i = 0;
+    var len = nalData.length;
+    while (i < len - 3) {
+      // Look for start codes: 00 00 01 or 00 00 00 01
+      if (nalData[i] === 0 && nalData[i+1] === 0) {
+        var nalTypeOff;
+        if (nalData[i+2] === 1) {
+          nalTypeOff = i + 3;
+        } else if (nalData[i+2] === 0 && i + 3 < len && nalData[i+3] === 1) {
+          nalTypeOff = i + 4;
+        } else {
+          i++;
+          continue;
+        }
+        if (nalTypeOff < len) {
+          var nalType = nalData[nalTypeOff] & 0x1F;
+          if (nalType === 5 || nalType === 7) return true;
+        }
+        i = nalTypeOff;
+      } else {
+        i++;
+      }
+    }
+    return false;
+  }
 
   var isMac = /Mac|iPhone|iPad/.test(navigator.platform);
   // Last clipboard text received from the remote desktop (for copy event fallback).
@@ -451,6 +546,8 @@
       canvas.style.height = (H / dpr) + "px";
       ctx.fillStyle = "#000";
       ctx.fillRect(0, 0, W, H);
+      // Reset H.264 decoder on resize (ResetGraphics)
+      resetH264Decoder();
       return;
     } else if (msgType === 0x05) {
       // Clipboard text from remote: [0x05][utf8...]
@@ -591,6 +688,67 @@
         stopMic();
       } else {
         startMic(micCh, micRate, micBps, bufMs);
+      }
+    } else if (msgType === 0x0A) {
+      // H.264 frame: [0x0A][surfId:u16][mode:u8][left:u16][top:u16][right:u16][bottom:u16]
+      //   [numRegions:u16][N × {left:u16,top:u16,right:u16,bottom:u16,qp:u8,quality:u8}][nalData...]
+      if (buf.length < 14) return;
+      // var surfId = buf[1] | (buf[2] << 8);
+      // var mode = buf[3];
+      var destLeft = buf[4] | (buf[5] << 8);
+      var destTop = buf[6] | (buf[7] << 8);
+      var destRight = buf[8] | (buf[9] << 8);
+      var destBottom = buf[10] | (buf[11] << 8);
+      var numRegions = buf[12] | (buf[13] << 8);
+      var nalOff = 14 + numRegions * 10;
+      if (nalOff > buf.length) return;
+      var nalData = buf.subarray(nalOff);
+      if (nalData.length === 0) return;
+
+      var isKey = isH264Keyframe(nalData);
+
+      // Lazy init on first frame
+      if (!h264Decoder) {
+        h264Decoder = createH264Decoder();
+      }
+      if (h264Decoder.state === "closed") return;
+
+      // Drop delta frames until we receive the first keyframe to prevent
+      // green artifacts from decoding without reference data.
+      if (!isKey && !h264GotKeyframe) return;
+      if (isKey) h264GotKeyframe = true;
+
+      // Parse region rects — these define which sub-rectangles of the
+      // decoded H.264 frame actually changed (MS-RDPEGFX 2.2.4.4).
+      // We must only paint these regions, not the full decoded frame,
+      // because regions outside the rects may contain stale reference data.
+      var regions = [];
+      var roff = 14;
+      for (var ri = 0; ri < numRegions; ri++) {
+        regions.push({
+          left:   buf[roff]   | (buf[roff+1] << 8),
+          top:    buf[roff+2] | (buf[roff+3] << 8),
+          right:  buf[roff+4] | (buf[roff+5] << 8),
+          bottom: buf[roff+6] | (buf[roff+7] << 8)
+        });
+        roff += 10; // 8 bytes rect + 2 bytes qp/quality
+      }
+
+      var ts = h264Timestamp;
+      h264Timestamp += 33333; // ~30fps monotonic timestamp in microseconds
+
+      h264RectMap[ts] = regions;
+
+      try {
+        var chunk = new EncodedVideoChunk({
+          type: isKey ? "key" : "delta",
+          timestamp: ts,
+          data: nalData
+        });
+        h264Decoder.decode(chunk);
+      } catch (e) {
+        console.error("H.264 decode error:", e);
+        delete h264RectMap[ts];
       }
     }
   };

@@ -53,6 +53,7 @@ type monitorSession struct {
 	clipCh      chan string
 	clipImageCh chan []byte
 	audioCh     chan []byte
+	h264Ch      chan []byte // pre-built WS frames for H.264 pass-through
 	done     chan struct{}
 	once     sync.Once
 }
@@ -296,6 +297,11 @@ func (d *Dispatcher) registerCallbacks() {
 		})
 	})
 
+	// H.264 frames are broadcast to all monitors — the encoded stream
+	// can't be clipped, and the destRect coordinates handle positioning.
+	// Note: OnH264Frame must be set before Connect() for EGFX caps.
+	// The Dispatcher.Connect() method handles this.
+
 	prevDisconnect := d.client.GetOnDisconnect()
 	d.client.OnDisconnect(func(err error) {
 		d.mu.Lock()
@@ -411,6 +417,7 @@ func (d *Dispatcher) Attach(monitorIndex int, conn *wsConn, w, h int) error {
 		clipCh:      make(chan string, 4),
 		clipImageCh: make(chan []byte, 4),
 		audioCh:     make(chan []byte, 32),
+		h264Ch:      make(chan []byte, 64),
 		done:     make(chan struct{}),
 	}
 	old := d.sessions[monitorIndex]
@@ -605,6 +612,22 @@ func (d *Dispatcher) runSession(s *monitorSession, monIdx int) {
 			case abuf := <-s.audioCh:
 				if err := lockedWriteWSFrameDirect(s.conn, abuf, len(abuf)-10); err != nil {
 					d.log.Error("WebSocket audio write error", "monitor", monIdx, "error", err)
+					return
+				}
+			case <-s.done:
+				return
+			}
+		}
+	}()
+
+	// H.264 send loop.
+	go func() {
+		defer s.close()
+		for {
+			select {
+			case buf := <-s.h264Ch:
+				if err := lockedWriteWSFrameDirect(s.conn, buf, len(buf)-10); err != nil {
+					d.log.Error("WebSocket H.264 write error", "monitor", monIdx, "error", err)
 					return
 				}
 			case <-s.done:

@@ -548,7 +548,7 @@ var isToggleFlag = map[string]bool{
 // isBareBoolFlag returns true for standard flag.Bool flags.
 var isBareBoolFlag = map[string]bool{
 	"clipboard-off": true, "admin": true,
-	"gfx-off": true,
+	"gfx-off": true, "no-avc": true,
 }
 
 // parseConfigFile reads a config file and returns synthetic CLI args.
@@ -673,6 +673,7 @@ func main() {
 	desktopScale := flag.Int("desktop-scale", 0, "DPI scale: 100/125/150/175/200/225/250/300/350/400/450/500 (0 to disable)")
 	deviceScale := flag.Int("device-scale", 0, "Device scale factor (100, 140, or 180)")
 	gfxOff := flag.Bool("gfx-off", false, "Disable RDPGFX graphics pipeline (EGFX)")
+	noAvc := flag.Bool("no-avc", false, "Disable H.264/AVC codec in EGFX (force RemoteFX/ClearCodec)")
 	keyboard := flag.String("keyboard", "scancode", "Keyboard input mode: scancode or unicode")
 	var guiFlag optionalString
 	flag.Var(&guiFlag, "gui", "Graphical desktop viewer (optional: -gui WxH, e.g. -gui 1920x1080)")
@@ -710,6 +711,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  -device-scale int        Physical DPI tier: 100=standard, 140=high, 180=very high\n")
 		fmt.Fprintf(os.Stderr, "                           (used with -desktop-scale for server-side UI scaling)\n")
 		fmt.Fprintf(os.Stderr, "  -gfx-off                 Disable RDPGFX graphics pipeline (EGFX)\n")
+		fmt.Fprintf(os.Stderr, "  -no-avc                  Disable H.264/AVC codec (force RemoteFX/ClearCodec)\n")
 		fmt.Fprintf(os.Stderr, "  -keyboard string         Keyboard input mode: scancode or unicode (default scancode)\n")
 		fmt.Fprintf(os.Stderr, "                           scancode = physical keys (remote layout determines chars)\n")
 		fmt.Fprintf(os.Stderr, "                           unicode  = typed characters (local layout determines chars)\n")
@@ -1052,6 +1054,7 @@ func main() {
 		FontSmoothing:        fontSmooth,
 		DesktopComposition:   desktopComp,
 		GFX:                  !*gfxOff,
+		NoAVC:                *noAvc,
 		KeyboardMode:         kbMode,
 		HeartbeatTimeout:     time.Duration(*heartbeat) * time.Second,
 		AutoReconnect:        autoReconnect,

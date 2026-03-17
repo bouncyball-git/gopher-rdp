@@ -8,6 +8,7 @@ package egfx
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"log/slog"
 
 	"gopher-rdp/sloghex"
@@ -80,15 +81,32 @@ const (
 
 // Capability flags.
 const (
-	FlagThinsClient = 0x00000001
-	FlagSmallCache  = 0x00000002
-	FlagAVCDisabled = 0x00000020
+	FlagThinsClient    = 0x00000001
+	FlagSmallCache     = 0x00000002
+	FlagAVC420Enabled  = 0x00000010 // v8.1: enable AVC420
+	FlagAVCDisabled    = 0x00000020
+	FlagAVCThinclient  = 0x00000040 // v10.3+: thin client AVC
 )
 
 // ClearCodecDecoder is the interface for a ClearCodec decoder.
 type ClearCodecDecoder interface {
 	Decompress(dst []byte, width, height int, src []byte) ([]byte, error)
 	ResetState() // reset sequence number on ResetGraphics (MS-RDPEGFX 3.1.8.1.1)
+}
+
+// H264Region describes a quality region for an H.264 frame (MS-RDPEGFX 2.2.4.4).
+type H264Region struct {
+	Left, Top, Right, Bottom uint16
+	QPVal, QualityVal        byte
+}
+
+// H264Frame carries H.264 NAL data and metadata for browser-side decoding.
+type H264Frame struct {
+	SurfaceID                    uint16
+	CodecMode                    byte // 0=AVC420, 1=AVC444-luma, 2=AVC444-chroma
+	Left, Top, Right, Bottom     int  // destRect from WireToSurface1
+	Regions                      []H264Region
+	NALData                      []byte
 }
 
 // Surface represents an RDPGFX surface (top-down RGBA 32bpp).
@@ -128,7 +146,9 @@ type Handler struct {
 	onResetGraphics func(w, h int)
 	onBeginPaint    func() // called before EndFrame flush loop
 	onEndPaint      func() // called after EndFrame flush loop
+	onH264Frame     func(*H264Frame) // H.264 pass-through callback
 	progressive    *rfx.Decoder // RemoteFX Progressive codec decoder
+	avcEnabled      bool // advertise AVC support in CAPS_ADVERTISE
 
 	// Frame batching: accumulate individual dirty rects during
 	// StartFrame..EndFrame and emit each independently at EndFrame.
@@ -136,6 +156,7 @@ type Handler struct {
 	// unrelated regions are updated in the same frame.
 	inFrame         bool
 	frameDirtyRects []dirtyRect
+	frameH264       []*H264Frame // H.264 frames batched during StartFrame..EndFrame
 
 	// Asynchronous frame ACK — decouples ACK sending from writeMu
 	// contention so the receive goroutine isn't blocked waiting to write.
@@ -226,6 +247,17 @@ func (h *Handler) OnEndPaint(fn func()) {
 	h.onEndPaint = fn
 }
 
+// OnH264Frame sets the callback for H.264 pass-through frames.
+// When set, AVC420/AVC444 data is forwarded as raw NAL units instead of decoded.
+func (h *Handler) OnH264Frame(fn func(*H264Frame)) {
+	h.onH264Frame = fn
+}
+
+// SetAVCEnabled controls whether AVC (H.264) codecs are advertised in CAPS_ADVERTISE.
+func (h *Handler) SetAVCEnabled(v bool) {
+	h.avcEnabled = v
+}
+
 // notifyBitmap records a display-dirty region. During a frame (between
 // StartFrame and EndFrame), dirty rects are accumulated individually and
 // flushed at EndFrame. Each rect is emitted independently, preventing
@@ -294,21 +326,29 @@ const (
 
 // SendCapsAdvertise sends a CAPS_ADVERTISE PDU advertising supported RDPGFX versions.
 // Advertises v10.7 through v8.0 (highest first) so the server picks the best it supports.
-// All v10.x sets use AVC_DISABLED since we don't implement H.264.
+// When avcEnabled is true, v10.x sets omit AVC_DISABLED and v8.1 sets AVC420_ENABLED.
 func (h *Handler) SendCapsAdvertise() error {
 	type capEntry struct {
 		version uint32
 		flags   uint32
 	}
+
+	v10flags := uint32(CapsFlagAVCDisabled)
+	v81flags := uint32(0)
+	if h.avcEnabled {
+		v10flags = 0 // omit AVC_DISABLED → server may send H.264
+		v81flags = FlagAVC420Enabled
+	}
+
 	caps := []capEntry{
-		{CapVersion107, CapsFlagAVCDisabled},
-		{CapVersion106, CapsFlagAVCDisabled},
-		{CapVersion105, CapsFlagAVCDisabled},
-		{CapVersion104, CapsFlagAVCDisabled},
-		{CapVersion103, CapsFlagAVCDisabled},
-		{CapVersion102, CapsFlagAVCDisabled},
-		{CapVersion10, CapsFlagAVCDisabled},
-		{CapVersion81, 0},
+		{CapVersion107, v10flags},
+		{CapVersion106, v10flags},
+		{CapVersion105, v10flags},
+		{CapVersion104, v10flags},
+		{CapVersion103, v10flags},
+		{CapVersion102, v10flags},
+		{CapVersion10, v10flags},
+		{CapVersion81, v81flags},
 		{CapVersion8, 0},
 	}
 
@@ -518,6 +558,111 @@ func (h *Handler) handleMapSurfaceToScaledOutput(data []byte) {
 	)
 }
 
+// parseAVC420Metablock parses an RDPGFX_AVC420_BITMAP_STREAM (MS-RDPEGFX 2.2.4.4).
+// Returns region rects, quant/quality values, and remaining NAL unit data.
+func parseAVC420Metablock(data []byte) ([]H264Region, []byte, error) {
+	if len(data) < 4 {
+		return nil, nil, fmt.Errorf("AVC420 metablock too short: %d", len(data))
+	}
+	numRegions := binary.LittleEndian.Uint32(data[0:4])
+	off := 4
+
+	// Each region rect: 8 bytes (left/top/right/bottom as u16 LE)
+	// Each quant/quality: 2 bytes (qpVal:u8, qualityVal:u8)
+	need := int(numRegions)*8 + int(numRegions)*2
+	if len(data)-off < need {
+		return nil, nil, fmt.Errorf("AVC420 metablock truncated: need %d, have %d", need, len(data)-off)
+	}
+
+	regions := make([]H264Region, numRegions)
+	for i := range regions {
+		regions[i].Left = binary.LittleEndian.Uint16(data[off:])
+		regions[i].Top = binary.LittleEndian.Uint16(data[off+2:])
+		regions[i].Right = binary.LittleEndian.Uint16(data[off+4:])
+		regions[i].Bottom = binary.LittleEndian.Uint16(data[off+6:])
+		off += 8
+	}
+	for i := range regions {
+		regions[i].QPVal = data[off]
+		regions[i].QualityVal = data[off+1]
+		off += 2
+	}
+
+	return regions, data[off:], nil
+}
+
+// parseAVC444 parses an RDPGFX_AVC444_BITMAP_STREAM (MS-RDPEGFX 2.2.4.5).
+// Returns one or two H264Frames depending on the LC field.
+func parseAVC444(data []byte, surfID uint16, left, top, right, bottom int) ([]*H264Frame, error) {
+	if len(data) < 4 {
+		return nil, fmt.Errorf("AVC444 data too short: %d", len(data))
+	}
+	tmp := binary.LittleEndian.Uint32(data[0:4])
+	cbAvc420First := int(tmp & 0x3FFFFFFF)
+	lc := (tmp >> 30) & 0x03
+
+	if lc == 3 {
+		return nil, fmt.Errorf("AVC444 invalid LC value 3")
+	}
+
+	rest := data[4:]
+
+	switch lc {
+	case 0: // both luma + chroma
+		if cbAvc420First < 4 {
+			return nil, fmt.Errorf("AVC444 LC=0 cbAvc420First too small: %d", cbAvc420First)
+		}
+		// cbAvc420EncodedBitstream1 measures the entire first AVC420 stream
+		// (metablock headers + NAL data) from the byte after the uint32 header.
+		// Stream 2 follows immediately after (MS-RDPEGFX 2.2.4.5).
+		if len(rest) < cbAvc420First {
+			return nil, fmt.Errorf("AVC444 LC=0 first stream truncated")
+		}
+		stream1 := rest[:cbAvc420First]
+		stream2 := rest[cbAvc420First:]
+
+		regions1, nal1, err := parseAVC420Metablock(stream1)
+		if err != nil {
+			return nil, fmt.Errorf("AVC444 luma metablock: %w", err)
+		}
+		regions2, nal2, err := parseAVC420Metablock(stream2)
+		if err != nil {
+			return nil, fmt.Errorf("AVC444 chroma metablock: %w", err)
+		}
+		nal1Copy := make([]byte, len(nal1))
+		copy(nal1Copy, nal1)
+		nal2Copy := make([]byte, len(nal2))
+		copy(nal2Copy, nal2)
+		return []*H264Frame{
+			{SurfaceID: surfID, CodecMode: 1, Left: left, Top: top, Right: right, Bottom: bottom, Regions: regions1, NALData: nal1Copy},
+			{SurfaceID: surfID, CodecMode: 2, Left: left, Top: top, Right: right, Bottom: bottom, Regions: regions2, NALData: nal2Copy},
+		}, nil
+
+	case 1: // luma only
+		regions, nal, err := parseAVC420Metablock(rest)
+		if err != nil {
+			return nil, fmt.Errorf("AVC444 luma-only metablock: %w", err)
+		}
+		nalCopy := make([]byte, len(nal))
+		copy(nalCopy, nal)
+		return []*H264Frame{
+			{SurfaceID: surfID, CodecMode: 1, Left: left, Top: top, Right: right, Bottom: bottom, Regions: regions, NALData: nalCopy},
+		}, nil
+
+	case 2: // chroma only
+		regions, nal, err := parseAVC420Metablock(rest)
+		if err != nil {
+			return nil, fmt.Errorf("AVC444 chroma-only metablock: %w", err)
+		}
+		nalCopy := make([]byte, len(nal))
+		copy(nalCopy, nal)
+		return []*H264Frame{
+			{SurfaceID: surfID, CodecMode: 2, Left: left, Top: top, Right: right, Bottom: bottom, Regions: regions, NALData: nalCopy},
+		}, nil
+	}
+	return nil, nil
+}
+
 func (h *Handler) handleStartFrame(data []byte) {
 	if len(data) < 8 {
 		return
@@ -526,6 +671,7 @@ func (h *Handler) handleStartFrame(data []byte) {
 	h.curFrameID = binary.LittleEndian.Uint32(data[4:8])
 	h.inFrame = true
 	h.frameDirtyRects = h.frameDirtyRects[:0]
+	h.frameH264 = h.frameH264[:0]
 }
 
 func (h *Handler) handleEndFrame(data []byte) {
@@ -561,10 +707,16 @@ func (h *Handler) handleEndFrame(data []byte) {
 	for _, dr := range h.frameDirtyRects {
 		h.emitBitmapRect(dr.surfID, dr.left, dr.top, dr.right, dr.bottom)
 	}
+	for _, f := range h.frameH264 {
+		if h.onH264Frame != nil {
+			h.onH264Frame(f)
+		}
+	}
 	if h.onEndPaint != nil {
 		h.onEndPaint()
 	}
 	h.frameDirtyRects = h.frameDirtyRects[:0]
+	h.frameH264 = h.frameH264[:0]
 }
 
 func (h *Handler) handleWireToSurface1(data []byte) {
@@ -668,6 +820,55 @@ func (h *Handler) handleWireToSurface1(data []byte) {
 					"r", pixels[midOff], "g", pixels[midOff+1], "b", pixels[midOff+2], "a", pixels[midOff+3])
 			}
 		}
+
+	case CodecAVC420:
+		if h.onH264Frame == nil {
+			h.log.LogAttrs(context.Background(), slog.LevelWarn, "AVC420 data but no H.264 callback set")
+			return
+		}
+		regions, nalData, err := parseAVC420Metablock(bitmapData)
+		if err != nil {
+			h.log.LogAttrs(context.Background(), slog.LevelError, "AVC420 parse error", slog.Any("err", err))
+			return
+		}
+		// Make a copy of the NAL data since bitmapData references the decompression buffer.
+		nalCopy := make([]byte, len(nalData))
+		copy(nalCopy, nalData)
+		frame := &H264Frame{
+			SurfaceID: surfId,
+			CodecMode: 0, // AVC420
+			Left:      left,
+			Top:       top,
+			Right:     right,
+			Bottom:    bottom,
+			Regions:   regions,
+			NALData:   nalCopy,
+		}
+		if h.inFrame {
+			h.frameH264 = append(h.frameH264, frame)
+		} else {
+			h.onH264Frame(frame)
+		}
+		return
+
+	case CodecAVC444, CodecAVC444v2:
+		if h.onH264Frame == nil {
+			h.log.LogAttrs(context.Background(), slog.LevelWarn, "AVC444 data but no H.264 callback set")
+			return
+		}
+		frames, err := parseAVC444(bitmapData, surfId, left, top, right, bottom)
+		if err != nil {
+			h.log.LogAttrs(context.Background(), slog.LevelError, "AVC444 parse error", slog.Any("err", err))
+			return
+		}
+		if h.inFrame {
+			h.frameH264 = append(h.frameH264, frames...)
+		} else {
+			for _, f := range frames {
+				h.onH264Frame(f)
+			}
+		}
+		return
 
 	default:
 		h.log.LogAttrs(context.Background(), slog.LevelWarn, "unsupported codec", sloghex.Hex4("codecId", codecId))
@@ -896,6 +1097,7 @@ func (h *Handler) handleResetGraphics(data []byte) {
 	clear(h.outputMap)
 	h.progressive = rfx.NewDecoder(h.log)
 	h.frameDirtyRects = h.frameDirtyRects[:0]
+	h.frameH264 = h.frameH264[:0]
 	h.inFrame = false
 	// Reset ClearCodec sequence number per MS-RDPEGFX 3.1.8.1.1.
 	// Required by MS-RDPEGFX 3.1.8.1.1 on graphics reset.
@@ -1104,7 +1306,7 @@ func (h *Handler) handleSurfaceToCache(data []byte) {
 	}
 
 	// Cap cache entries to prevent unbounded memory growth.
-	const maxCacheEntries = 4096
+	const maxCacheEntries = 8192
 	if _, exists := h.cache[cacheSlot]; !exists && len(h.cache) >= maxCacheEntries {
 		h.log.LogAttrs(context.Background(), slog.LevelWarn, "cache limit reached, evicting oldest",
 			slog.Int("limit", maxCacheEntries))

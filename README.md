@@ -80,7 +80,7 @@ go build -o gopher-rdp ./client
 ### Graphics Pipeline
 
 **RDPGFX (RDP 8.0+ Graphics Pipeline Extension)** — enabled by default (disable with `-gfx-off`):
-- Capability versions 8.0, 8.1, 10.0–10.7 (AVC/H.264 disabled — not implemented)
+- Capability versions 8.0, 8.1, 10.0–10.7 with AVC/H.264 pass-through (web viewer only, disable with `-no-avc`)
 - RemoteFX Progressive codec with tile caching and DWT extrapolation
 - ClearCodec with residual, band, and subcodec layers plus vbar caching
 - NSCodec with YCoCg color transform and per-plane RLE
@@ -255,6 +255,7 @@ opts.USBDevices = []rdp.USBRedirect{
 | `FontSmoothing` | `bool` | true | ClearType fonts |
 | `DesktopComposition` | `bool` | false | Desktop composition (Aero Glass) |
 | `GFX` | `bool` | false | Enable RDPGFX graphics pipeline (CLI enables by default) |
+| `NoAVC` | `bool` | false | Disable H.264/AVC codec (force RemoteFX/ClearCodec) |
 | `KeyboardMode` | `KeyboardMode` | `KeyboardScancode` | Keyboard input mode (scancode or unicode) |
 | `HeartbeatTimeout` | `time.Duration` | 10s | Max time without server data before disconnect (0 = off) |
 | `AutoReconnect` | `bool` | false | Auto-reconnect on disconnect |
@@ -550,6 +551,7 @@ var (
 | `-desktop-scale` | 0 | DPI zoom percent (100/125/150/175/200/225/250/300/350/400/450/500, 0 = off) |
 | `-device-scale` | 0 | Physical DPI tier (100, 140, or 180) |
 | `-gfx-off` | false | Disable RDPGFX graphics pipeline (EGFX) |
+| `-no-avc` | false | Disable H.264/AVC codec (force RemoteFX/ClearCodec) |
 | `-keyboard` | scancode | Keyboard input mode: `scancode` (remote layout) or `unicode` (local layout) |
 | `-gui [WxH]` | | Graphical desktop viewer (default 1600x900) |
 | `-web [port]` | 8080 | Web viewer (default port 8080) |
