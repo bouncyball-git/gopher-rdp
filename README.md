@@ -114,6 +114,7 @@ go build -o gopher-rdp ./client
 - **Parallel Port Redirection** (MS-RDPESP/MS-RDPDR) — Redirect local parallel ports (e.g. `/dev/lp0`) as LPT ports in the remote session
 - **Smartcard Redirection** (MS-RDPESC/MS-RDPDR) — Redirect local smartcard readers via pcsclite, with full SCard API passthrough for authentication and signing applications
 - **USB Redirection** (MS-RDPEUSB) — Raw USB device forwarding over DRDYNVC, with URB-level transfer support (control, bulk, interrupt) via Linux usbdevfs. PnP hotplug: auto-detect newly inserted devices, with class-based exclusion (HID, hub, audio, smartcard auto-excluded)
+- **Webcam Redirection** (MS-RDPECAM) — Browser webcam capture via WebCodecs VideoEncoder (H.264 Annex B), streamed to the remote session as a virtual camera device. Works with Chrome, Firefox, Opera, and Safari (web viewer only)
 - **Display Resize** (MS-RDPEDISP) — Dynamic session resize over DRDYNVC, with rate limiting
 - **Dynamic Virtual Channels** (DRDYNVC) — Channel multiplexing with DataFirst/Data reassembly
 
@@ -682,7 +683,7 @@ A pprof server is always available at `http://localhost:6060`.
 |---------------|----------|
 | MS-RDPBCGR | Core protocol: X.224, MCS/GCC, licensing, capabilities, fast-path, slow-path, auto-reconnect |
 | MS-RDPEGDI | 16 primary drawing orders, bitmap caches, glyph caches |
-| MS-RDPEGFX | Graphics pipeline v8/v8.1/v10.0–10.7: surfaces, codec dispatch, frame acknowledge, cache management (no AVC/H.264) |
+| MS-RDPEGFX | Graphics pipeline v8/v8.1/v10.0–10.7: surfaces, codec dispatch, frame acknowledge, cache management, AVC420/AVC444 H.264 pass-through (web viewer) |
 | MS-RDPRFX | RemoteFX Progressive codec: RLGR, DWT, ICT, tile caching, coefficient diff |
 | MS-RDPNSC | NSCodec: YCoCg transform, per-plane RLE |
 | MS-RDPCCOD | ClearCodec: residual, bands, subcodec, vbar caching |
@@ -694,6 +695,7 @@ A pprof server is always available at `http://localhost:6060`.
 | MS-RDPESP | Serial and parallel port redirection |
 | MS-RDPESC | Smartcard redirection: SCard API passthrough via pcsclite |
 | MS-RDPEUSB | USB device redirection: raw URB forwarding over DRDYNVC (control, bulk, interrupt), PnP hotplug with class filtering |
+| MS-RDPECAM | Webcam redirection: browser H.264 capture via WebCodecs, streamed as virtual camera device |
 | MS-RDPEDISP | Display control virtual channel: dynamic resize |
 | MS-RDPEDYC | Dynamic virtual channel transport: multiplexing, reassembly |
 | MS-RDPELE | Licensing: server license negotiation |
@@ -732,6 +734,7 @@ protocol/
   audin/                       # Audio input virtual channel (MS-RDPEAI)
   rdpdr/                       # Drive redirection virtual channel (MS-RDPEFS)
   urbdrc/                      # USB device redirection virtual channel (MS-RDPEUSB)
+  rdpecam/                     # Webcam redirection virtual channel (MS-RDPECAM)
   disp/                        # Display resize virtual channel
 display/
   gui/                         # Ebiten-based desktop GUI viewer
