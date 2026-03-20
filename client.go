@@ -2432,8 +2432,11 @@ func (c *Client) reconnectLoop() {
 
 	max := c.opts.MaxReconnectAttempts
 
+	const reconnectDelay = 3 * time.Second
+
 	for attempt := 1; max == 0 || attempt <= max; attempt++ {
-		c.log.LogAttrs(context.Background(), slog.LevelWarn, "reconnecting", slog.Int("attempt", attempt))
+		c.log.LogAttrs(context.Background(), slog.LevelWarn, "reconnecting", slog.Int("attempt", attempt), slog.Duration("delay", reconnectDelay))
+		time.Sleep(reconnectDelay)
 		c.resetForReconnect()
 		if err := c.Connect(); err != nil {
 			c.log.LogAttrs(context.Background(), slog.LevelError, "reconnect attempt failed", slog.Int("attempt", attempt), slog.Any("err", err))
