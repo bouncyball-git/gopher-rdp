@@ -25,19 +25,6 @@ import (
 
 const version = "0.9.22"
 
-// toggle implements flag.Value as a boolean toggle: passing -flag flips the
-// current value. This lets experience flags act as exclusions when combined
-// with -enable-all-exp (e.g. -enable-all-exp -wallpaper = all except wallpaper).
-type toggle struct{ val *bool }
-
-func (t *toggle) IsBoolFlag() bool { return true }
-func (t *toggle) String() string {
-	if t.val == nil {
-		return ""
-	}
-	return strconv.FormatBool(*t.val)
-}
-func (t *toggle) Set(string) error { *t.val = !*t.val; return nil }
 
 // optionalString implements flag.Value as a boolean-style flag that also
 // accepts an optional string value. Passing -log-file sets it to the default
@@ -536,13 +523,9 @@ func parseLogLevel(s string) slog.Level {
 var isBoolStyleFlag = map[string]bool{
 	"gui": true, "web": true, "log": true, "log-file": true, "audio-out": true, "audio-in": true, "smartcard": true,
 	"auto-reconnect": true,
-}
-
-// isToggleFlag returns true for toggle-type flags (on/off/bare).
-var isToggleFlag = map[string]bool{
 	"wallpaper": true, "window-drag": true, "menu-animations": true,
 	"theming": true, "cursor-shadow": true, "cursor-settings": true,
-	"font-smoothing": true, "desktop-composition": true, "enable-all-visuals": true,
+	"font-smoothing": true, "desktop-composition": true, "disable-visuals": true,
 }
 
 // isBareBoolFlag returns true for standard flag.Bool flags.
@@ -589,14 +572,6 @@ func parseConfigFile(path string) ([]string, error) {
 			} else {
 				args = append(args, "-"+key+"="+value)
 			}
-		case isToggleFlag[key]:
-			if strings.EqualFold(value, "false") {
-				continue
-			}
-			if value != "" && !strings.EqualFold(value, "true") {
-				return nil, fmt.Errorf("flag %q: expected true or false, got %q", key, value)
-			}
-			args = append(args, "-"+key)
 		case isBareBoolFlag[key]:
 			if strings.EqualFold(value, "false") {
 				continue
@@ -627,25 +602,15 @@ func main() {
 	flag.Var(&displays, "display", "Display count N[,P], P=primary index (default 0)")
 	depth := flag.Int("depth", 32, "Color depth (8, 15, 16, 24, or 32)")
 	cookie := flag.String("cookie", "", "Routing cookie")
-	var (
-		wallpaper      = false
-		windowDrag     = false
-		menuAnim       = false
-		theming        = true
-		cursorShadow   = true
-		cursorSettings = true
-		fontSmooth     = true
-		desktopComp    = false
-	)
-	flag.Var(&toggle{&wallpaper}, "wallpaper", "Toggle desktop wallpaper")
-	flag.Var(&toggle{&windowDrag}, "window-drag", "Toggle window contents while dragging")
-	flag.Var(&toggle{&menuAnim}, "menu-animations", "Toggle menu animations")
-	flag.Var(&toggle{&theming}, "theming", "Toggle visual themes (Aero/Luna)")
-	flag.Var(&toggle{&cursorShadow}, "cursor-shadow", "Toggle cursor shadow")
-	flag.Var(&toggle{&cursorSettings}, "cursor-settings", "Toggle cursor blink settings")
-	flag.Var(&toggle{&fontSmooth}, "font-smoothing", "Toggle ClearType font smoothing")
-	flag.Var(&toggle{&desktopComp}, "desktop-composition", "Toggle desktop composition (Aero Glass)")
-	allExp := flag.Bool("enable-all-visuals", false, "Enable all visual effects (toggle individual flags to exclude)")
+	wallpaper := flag.Bool("wallpaper", true, "Desktop wallpaper (default true)")
+	windowDrag := flag.Bool("window-drag", true, "Show window contents while dragging (default true)")
+	menuAnim := flag.Bool("menu-animations", true, "Menu animations (default true)")
+	theming := flag.Bool("theming", true, "Visual themes / Aero/Luna (default true)")
+	cursorShadow := flag.Bool("cursor-shadow", true, "Cursor shadow (default true)")
+	cursorSettings := flag.Bool("cursor-settings", true, "Cursor blink settings (default true)")
+	fontSmooth := flag.Bool("font-smoothing", true, "ClearType font smoothing (default true)")
+	desktopComp := flag.Bool("desktop-composition", true, "Desktop composition / Aero Glass (default true)")
+	disableVisuals := flag.Bool("disable-visuals", false, "Disable all visual effects (default false)")
 	noClipboard := flag.Bool("no-clipboard", false, "Disable clipboard redirection")
 	var audioOut audioFlag
 	audioOut.cfg = rdp.AudioConfig{BufMs: 15, Stereo: true, MinRate: 44100}
@@ -722,16 +687,16 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  -heartbeat int           Heartbeat timeout in seconds, 0 to disable (default 10)\n")
 		fmt.Fprintf(os.Stderr, "  -auto-reconnect          Enable automatic reconnection (default true)\n")
 		fmt.Fprintf(os.Stderr, "  -reconnect-attempts int  Max reconnect attempts, 0 = unlimited (default 0)\n")
-		fmt.Fprintf(os.Stderr, "\nVisuals (pass -flag to toggle; defaults shown):\n")
-		fmt.Fprintf(os.Stderr, "  -wallpaper               Toggle desktop wallpaper (default off)\n")
-		fmt.Fprintf(os.Stderr, "  -window-drag             Toggle window contents while dragging (default off)\n")
-		fmt.Fprintf(os.Stderr, "  -menu-animations         Toggle menu animations (default off)\n")
-		fmt.Fprintf(os.Stderr, "  -theming                 Toggle visual themes (default on)\n")
-		fmt.Fprintf(os.Stderr, "  -cursor-shadow           Toggle cursor shadow (default on)\n")
-		fmt.Fprintf(os.Stderr, "  -cursor-settings         Toggle cursor blink settings (default on)\n")
-		fmt.Fprintf(os.Stderr, "  -font-smoothing          Toggle ClearType font smoothing (default on)\n")
-		fmt.Fprintf(os.Stderr, "  -desktop-composition     Toggle desktop composition / Aero Glass (default off)\n")
-		fmt.Fprintf(os.Stderr, "  -enable-all-visuals      Enable all visual effects\n")
+		fmt.Fprintf(os.Stderr, "\nVisuals (all enabled by default; use -flag=false to disable):\n")
+		fmt.Fprintf(os.Stderr, "  -wallpaper               Desktop wallpaper\n")
+		fmt.Fprintf(os.Stderr, "  -window-drag             Show window contents while dragging\n")
+		fmt.Fprintf(os.Stderr, "  -menu-animations         Menu animations\n")
+		fmt.Fprintf(os.Stderr, "  -theming                 Visual themes (Aero/Luna)\n")
+		fmt.Fprintf(os.Stderr, "  -cursor-shadow           Cursor shadow\n")
+		fmt.Fprintf(os.Stderr, "  -cursor-settings         Cursor blink settings\n")
+		fmt.Fprintf(os.Stderr, "  -font-smoothing          ClearType font smoothing\n")
+		fmt.Fprintf(os.Stderr, "  -desktop-composition     Desktop composition / Aero Glass\n")
+		fmt.Fprintf(os.Stderr, "  -disable-visuals         Disable all visual effects\n")
 		fmt.Fprintf(os.Stderr, "\nRedirect (all on by default):\n")
 		fmt.Fprintf(os.Stderr, "  -no-clipboard            Disable clipboard redirection\n")
 		fmt.Fprintf(os.Stderr, "  -audio-out [opts]        Audio output (omit = no audio at all)\n")
@@ -795,15 +760,15 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  key value per line (space/tab separated), keys = flag names without -\n")
 		fmt.Fprintf(os.Stderr, "  # comments (full-line or inline after whitespace), blank lines ignored\n")
 		fmt.Fprintf(os.Stderr, "  Repeatable keys (drive, serial, parallel, printer, usb) accumulate from config + CLI\n")
-		fmt.Fprintf(os.Stderr, "  Toggle keys: \"key on\" or bare \"key\" = enabled, \"key off\" = disabled\n")
+		fmt.Fprintf(os.Stderr, "  Boolean keys: \"key true\" or bare \"key\" = enabled, \"key false\" = disabled\n")
 		fmt.Fprintf(os.Stderr, "  CLI flags override config values for scalar options\n")
 		fmt.Fprintf(os.Stderr, "\n  Example (gopher-rdp.conf):\n")
 		fmt.Fprintf(os.Stderr, "    host 10.0.0.1\n")
 		fmt.Fprintf(os.Stderr, "    user admin\n")
 		fmt.Fprintf(os.Stderr, "    depth 32\n")
 		fmt.Fprintf(os.Stderr, "    gui 1920x1080\n")
-		fmt.Fprintf(os.Stderr, "    theming on\n")
-		fmt.Fprintf(os.Stderr, "    font-smoothing on\n")
+		fmt.Fprintf(os.Stderr, "    wallpaper false\n")
+		fmt.Fprintf(os.Stderr, "    desktop-composition false\n")
 		fmt.Fprintf(os.Stderr, "    drive share:/home/user/dir\n")
 		fmt.Fprintf(os.Stderr, "    drive tmp:/tmp:ro\n")
 		fmt.Fprintf(os.Stderr, "    log RDPDR,EGFX\n")
@@ -974,29 +939,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	// -enable-all-exp sets all experience flags to true, then re-applies
-	// any explicitly toggled flags as exclusions.
-	// e.g. -enable-all-exp -wallpaper = all except wallpaper
-	if *allExp {
-		expFlags := map[string]*bool{
-			"wallpaper":           &wallpaper,
-			"window-drag":         &windowDrag,
-			"menu-animations":     &menuAnim,
-			"theming":             &theming,
-			"cursor-shadow":       &cursorShadow,
-			"cursor-settings":     &cursorSettings,
-			"font-smoothing":      &fontSmooth,
-			"desktop-composition": &desktopComp,
-		}
-		for _, p := range expFlags {
-			*p = true
-		}
-		// Toggle back any explicitly-specified flags (exclusions)
-		flag.Visit(func(f *flag.Flag) {
-			if p, ok := expFlags[f.Name]; ok {
-				*p = !*p
-			}
-		})
+	// -disable-visuals overrides all visual flags to false.
+	if *disableVisuals {
+		*wallpaper = false
+		*windowDrag = false
+		*menuAnim = false
+		*theming = false
+		*cursorShadow = false
+		*cursorSettings = false
+		*fontSmooth = false
+		*desktopComp = false
 	}
 
 	// Build options.
@@ -1046,14 +998,14 @@ func main() {
 		Parallels:            []rdp.ParallelRedirect(parallels),
 		Printers:             []rdp.PrinterRedirect(printers),
 		USBDevices:           []rdp.USBRedirect(usbDevices),
-		Wallpaper:            wallpaper,
-		FullWindowDrag:       windowDrag,
-		MenuAnimations:       menuAnim,
-		Theming:              theming,
-		CursorShadow:         cursorShadow,
-		CursorSettings:       cursorSettings,
-		FontSmoothing:        fontSmooth,
-		DesktopComposition:   desktopComp,
+		Wallpaper:            *wallpaper,
+		FullWindowDrag:       *windowDrag,
+		MenuAnimations:       *menuAnim,
+		Theming:              *theming,
+		CursorShadow:         *cursorShadow,
+		CursorSettings:       *cursorSettings,
+		FontSmoothing:        *fontSmooth,
+		DesktopComposition:   *desktopComp,
 		GFX:                  !*noGfx,
 		NoAVC:                *noAvc,
 		Camera:               *camera,
