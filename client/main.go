@@ -535,6 +535,7 @@ func parseLogLevel(s string) slog.Level {
 // isBoolStyleFlag returns true for flags that use IsBoolFlag (need -key=value format).
 var isBoolStyleFlag = map[string]bool{
 	"gui": true, "web": true, "log": true, "log-file": true, "audio-out": true, "audio-in": true, "smartcard": true,
+	"auto-reconnect": true,
 }
 
 // isToggleFlag returns true for toggle-type flags (on/off/bare).
@@ -542,7 +543,6 @@ var isToggleFlag = map[string]bool{
 	"wallpaper": true, "window-drag": true, "menu-animations": true,
 	"theming": true, "cursor-shadow": true, "cursor-settings": true,
 	"font-smoothing": true, "desktop-composition": true, "enable-all-visuals": true,
-	"auto-reconnect": true,
 }
 
 // isBareBoolFlag returns true for standard flag.Bool flags.
@@ -668,8 +668,7 @@ func main() {
 	camera := flag.Bool("camera", false, "Enable webcam redirection via RDPECAM (web viewer only)")
 	admin := flag.Bool("admin", false, "Connect to the console (admin) session")
 	heartbeat := flag.Int("heartbeat", 10, "Heartbeat timeout in seconds, 0 to disable (default 10)")
-	autoReconnect := true
-	flag.Var(&toggle{&autoReconnect}, "auto-reconnect", "Toggle automatic reconnection (default on)")
+	autoReconnect := flag.Bool("auto-reconnect", true, "Enable automatic reconnection (default true)")
 	reconnectAttempts := flag.Int("reconnect-attempts", 0, "Max reconnect attempts (0 = unlimited)")
 	desktopScale := flag.Int("desktop-scale", 0, "DPI scale: 100/125/150/175/200/225/250/300/350/400/450/500 (0 to disable)")
 	deviceScale := flag.Int("device-scale", 0, "Device scale factor (100, 140, or 180)")
@@ -721,7 +720,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "\nSession:\n")
 		fmt.Fprintf(os.Stderr, "  -admin                   Connect to the console (admin) session\n")
 		fmt.Fprintf(os.Stderr, "  -heartbeat int           Heartbeat timeout in seconds, 0 to disable (default 10)\n")
-		fmt.Fprintf(os.Stderr, "  -auto-reconnect          Toggle automatic reconnection (default on)\n")
+		fmt.Fprintf(os.Stderr, "  -auto-reconnect          Enable automatic reconnection (default true)\n")
 		fmt.Fprintf(os.Stderr, "  -reconnect-attempts int  Max reconnect attempts, 0 = unlimited (default 0)\n")
 		fmt.Fprintf(os.Stderr, "\nVisuals (pass -flag to toggle; defaults shown):\n")
 		fmt.Fprintf(os.Stderr, "  -wallpaper               Toggle desktop wallpaper (default off)\n")
@@ -1060,7 +1059,7 @@ func main() {
 		Camera:               *camera,
 		KeyboardMode:         kbMode,
 		HeartbeatTimeout:     time.Duration(*heartbeat) * time.Second,
-		AutoReconnect:        autoReconnect,
+		AutoReconnect:        *autoReconnect,
 		MaxReconnectAttempts: *reconnectAttempts,
 	}
 	// Smartcard redirection
