@@ -61,6 +61,16 @@ func srcRowY(y, height int, topDown bool) int {
 //   - 24 bpp (8-8-8): byte order B,G,R
 //   - 32 bpp (8-8-8-8): byte order B,G,R,A (alpha ignored, set to 0xFF)
 func ConvertToRGBA(dst, src []byte, width, height, bpp int, topDown ...bool) []byte {
+	if width <= 0 || height <= 0 || bpp <= 0 {
+		return dst
+	}
+	srcBytesPerPixel := bpp / 8
+	if srcBytesPerPixel == 0 {
+		srcBytesPerPixel = 1
+	}
+	if len(src) < width*height*srcBytesPerPixel || len(dst) < width*height*4 {
+		return dst
+	}
 	td := len(topDown) > 0 && topDown[0]
 	dstStride := width * 4
 	switch bpp {

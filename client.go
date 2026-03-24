@@ -259,7 +259,8 @@ type Client struct {
 	pointerBuf   []byte             // reusable RGBA conversion buffer
 
 	// Virtual channel reassembly (chunked VC data from server)
-	vcReassembly map[uint16][]byte // channelID → accumulated payload
+	vcReassembly      map[uint16][]byte // channelID → accumulated payload
+	vcReassemblyTotal int               // total bytes across all reassembly buffers
 
 	// Fast-path fragment reassembly
 	fragBuf  []byte // reusable reassembly buffer (grows, reset via fragBuf[:0])
@@ -1168,6 +1169,10 @@ func (c *Client) mcsConnect() error {
 		}
 	})
 	c.registerChannelHandler("drdynvc", func(_ uint16, data []byte) {
+		if len(data) < 1 {
+			c.log.LogAttrs(context.Background(), slog.LevelWarn, "drdynvc empty PDU")
+			return
+		}
 		c.log.LogAttrs(context.Background(), slog.LevelDebug, "drdynvc static channel data", slog.Int("len", len(data)), sloghex.Hex2("hdr", data[0]), sloghex.Hex2("cmd", (data[0]>>4)&0x0F))
 		c.dvc.ProcessPDU(data)
 	})
@@ -2392,6 +2397,7 @@ func (c *Client) resetForReconnect() {
 	}
 	c.rdpdrHandler = nil
 	c.vcReassembly = nil
+	c.vcReassemblyTotal = 0
 	c.pendingResizeW = 0
 	c.pendingResizeH = 0
 	c.pendingMonitors = nil
@@ -4659,7 +4665,10 @@ func (c *Client) handleVirtualChannelData(channelID uint16, data []byte) {
 
 	if flags&channelFlagFirst != 0 && flags&channelFlagLast != 0 {
 		// Single complete PDU — no reassembly needed (common case)
-		delete(c.vcReassembly, channelID)
+		if old, exists := c.vcReassembly[channelID]; exists {
+			c.vcReassemblyTotal -= len(old)
+			delete(c.vcReassembly, channelID)
+		}
 		handler(channelID, chunk)
 		return
 	}
@@ -4668,14 +4677,26 @@ func (c *Client) handleVirtualChannelData(channelID uint16, data []byte) {
 		// Start of multi-chunk sequence. Cap pre-allocation to avoid
 		// OOM from a malformed totalLength value (untrusted server data).
 		totalLen := binary.LittleEndian.Uint32(data[0:4])
-		const maxVCReassembly = 64 * 1024 * 1024 // 64 MB
+		const maxVCReassembly = 64 * 1024 * 1024      // 64 MB per channel
+		const maxVCReassemblyGlobal = 256 * 1024 * 1024 // 256 MB total
 		if totalLen > maxVCReassembly {
 			c.log.LogAttrs(context.Background(), slog.LevelWarn, "VC reassembly totalLen exceeds limit, dropping",
 				slog.String("channel", name), slog.Int("totalLen", int(totalLen)))
 			return
 		}
+		if c.vcReassemblyTotal+int(totalLen) > maxVCReassemblyGlobal {
+			c.log.LogAttrs(context.Background(), slog.LevelWarn, "VC reassembly global limit exceeded, dropping",
+				slog.String("channel", name), slog.Int("total", c.vcReassemblyTotal), slog.Int("totalLen", int(totalLen)))
+			return
+		}
+		// Evict any stale buffer for this channel before starting a new one.
+		if old, exists := c.vcReassembly[channelID]; exists {
+			c.vcReassemblyTotal -= len(old)
+		}
 		buf := make([]byte, 0, totalLen)
-		c.vcReassembly[channelID] = append(buf, chunk...)
+		buf = append(buf, chunk...)
+		c.vcReassembly[channelID] = buf
+		c.vcReassemblyTotal += len(buf)
 		return
 	}
 
@@ -4685,9 +4706,12 @@ func (c *Client) handleVirtualChannelData(channelID uint16, data []byte) {
 		c.log.LogAttrs(context.Background(), slog.LevelWarn, "VC chunk without FIRST, dropping", slog.String("channel", name), sloghex.Hex8("flags", flags))
 		return
 	}
+	oldLen := len(buf)
 	buf = append(buf, chunk...)
+	c.vcReassemblyTotal += len(buf) - oldLen
 
 	if flags&channelFlagLast != 0 {
+		c.vcReassemblyTotal -= len(buf)
 		delete(c.vcReassembly, channelID)
 		handler(channelID, buf)
 	} else {
@@ -5419,7 +5443,7 @@ func (c *Client) Close() error {
 	c.closeMu.Lock()
 	defer c.closeMu.Unlock()
 
-	if c.closed {
+	if c.closed || c.reconnecting {
 		return nil
 	}
 	c.closed = true

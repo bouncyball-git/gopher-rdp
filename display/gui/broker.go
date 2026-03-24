@@ -444,12 +444,15 @@ func (s *brokerState) registerBrokerCallbacks() {
 	})
 
 	s.client.OnBitmap(func(u *rdp.BitmapUpdate) {
+		if u.Width <= 0 || u.Height <= 0 || u.Width > 32768 || u.Height > 32768 {
+			return
+		}
 		// Convert to 32bpp RGBA.
 		needed := u.Width * u.Height * 4
 		rgba := make([]byte, needed)
-		if u.BitsPerPixel == 32 && u.TopDown {
+		if u.BitsPerPixel == 32 && u.TopDown && len(u.Data) >= needed {
 			copy(rgba, u.Data[:needed])
-		} else {
+		} else if len(u.Data) >= u.Width*u.Height*(u.BitsPerPixel/8) {
 			display.ConvertToRGBA(rgba, u.Data, u.Width, u.Height, u.BitsPerPixel, u.TopDown)
 		}
 		rect := bitmapRect{X: u.X, Y: u.Y, Width: u.Width, Height: u.Height, Data: rgba}

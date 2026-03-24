@@ -214,6 +214,9 @@ type readerStateInfo struct {
 
 func parseReaderState(data []byte) readerStateInfo {
 	var rs readerStateInfo
+	if len(data) < pcscReaderStateSize {
+		return rs
+	}
 	rs.Name = cString(data[0:pcscMaxReaderName])
 	rs.EventCounter = binary.LittleEndian.Uint32(data[128:132])
 	rs.State = binary.LittleEndian.Uint32(data[132:136])

@@ -190,6 +190,9 @@ func decodeIMAStereoBlock(blk []byte, samplesPerBlock int, dst []int16, outOff i
 	}
 
 	// Write initial samples (interleaved: L, R).
+	if outOff+1 >= len(dst) {
+		return outOff
+	}
 	dst[outOff] = int16(predictor[0])
 	dst[outOff+1] = int16(predictor[1])
 	outOff += 2
@@ -285,6 +288,10 @@ func decodeIMAStereoBlock(blk []byte, samplesPerBlock int, dst []int16, outOff i
 		n := chCount[0]
 		if chCount[1] < n {
 			n = chCount[1]
+		}
+		// Cap to remaining samples to prevent writing past dst.
+		if remaining := samplesPerBlock - samplesDecoded; n > remaining {
+			n = remaining
 		}
 		for i := 0; i < n; i++ {
 			dst[outOff] = chSamples[0][i]
@@ -386,10 +393,16 @@ func decodeMSBlock(blk []byte, channels int, samplesPerBlock int, dst []int16, o
 
 	// Output first two samples per channel (samp2 first, then samp1).
 	if channels == 1 {
+		if outOff+1 >= len(dst) {
+			return outOff
+		}
 		dst[outOff] = int16(samp2[0])
 		dst[outOff+1] = int16(samp1[0])
 		outOff += 2
 	} else {
+		if outOff+3 >= len(dst) {
+			return outOff
+		}
 		dst[outOff] = int16(samp2[0])
 		dst[outOff+1] = int16(samp2[1])
 		dst[outOff+2] = int16(samp1[0])

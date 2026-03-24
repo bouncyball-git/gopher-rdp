@@ -52,10 +52,10 @@ func DecodeServerSecurityBlob(data []byte) (*ServerSecurityBlob, error) {
 		return nil, fmt.Errorf("server security blob too short: %d bytes", len(data))
 	}
 
-	serverRandomLen := binary.LittleEndian.Uint32(data[0:4])
-	serverCertLen := binary.LittleEndian.Uint32(data[4:8])
+	serverRandomLen := uint64(binary.LittleEndian.Uint32(data[0:4]))
+	serverCertLen := uint64(binary.LittleEndian.Uint32(data[4:8]))
 
-	if uint32(len(data)) < 8+serverRandomLen+serverCertLen {
+	if uint64(len(data)) < 8+serverRandomLen+serverCertLen {
 		return nil, fmt.Errorf("server security blob truncated: need %d, have %d",
 			8+serverRandomLen+serverCertLen, len(data))
 	}

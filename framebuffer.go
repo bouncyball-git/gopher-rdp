@@ -264,6 +264,10 @@ func (fb *Framebuffer) WriteRectTopDown(x, y, w, h int, src []byte) {
 // stride into the framebuffer at (x, y). This avoids an intermediate copy when
 // reading directly from a surface buffer that is wider than the update rect.
 func (fb *Framebuffer) WriteRectStridedTopDown(x, y, w, h int, src []byte, srcStride int) {
+	if srcStride < w*4 || len(src) < (h-1)*srcStride+w*4 {
+		return
+	}
+
 	x, y, w, h = fb.clipRect(x, y, w, h)
 	if w <= 0 || h <= 0 {
 		return

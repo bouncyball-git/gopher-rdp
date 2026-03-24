@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	rdp "gopher-rdp"
 	"gopher-rdp/display"
@@ -175,7 +176,13 @@ func (d *Dispatcher) registerCallbacks() {
 	})
 
 	d.client.OnStridedBitmap(func(x, y, w, h int, data []byte, stride int) {
+		if w <= 0 || h <= 0 || w > 32768 || h > 32768 {
+			return
+		}
 		dstStride := w * 4
+		if stride < dstStride || len(data) < h*stride {
+			return
+		}
 		dataCopy := make([]byte, dstStride*h)
 		for row := range h {
 			copy(dataCopy[row*dstStride:row*dstStride+dstStride], data[row*stride:row*stride+dstStride])
@@ -590,13 +597,18 @@ func (d *Dispatcher) runSession(s *monitorSession, monIdx int) {
 	mon := s.monitor
 
 	// Reusable frame buffer for batched bitmap messages.
-	wsBuf := make([]byte, 10+1+8+mon.Width*mon.Height*4)
+	monPixels := mon.Width * mon.Height
+	if mon.Width > 0 && monPixels/mon.Width != mon.Height {
+		monPixels = 0 // overflow
+	}
+	wsBuf := make([]byte, 10+1+8+monPixels*4)
 
 	// Disconnect watcher.
 	go func() {
 		select {
 		case <-d.done:
 			d.log.Info("RDP disconnected, notifying browser", "monitor", monIdx)
+			s.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 			lockedWriteWSFrame(s.conn, []byte{wsMsgDisconnect})
 			s.conn.Close()
 			s.close()
@@ -647,6 +659,9 @@ func (d *Dispatcher) runSession(s *monitorSession, monIdx int) {
 				}
 				payloadLen := 0
 				for _, u := range batch {
+					if u.Width <= 0 || u.Height <= 0 || u.Width > 32768 || u.Height > 32768 {
+						continue
+					}
 					payloadLen += 1 + 8 + u.Width*u.Height*4
 				}
 				totalNeeded := 10 + payloadLen
@@ -656,6 +671,9 @@ func (d *Dispatcher) runSession(s *monitorSession, monIdx int) {
 				fb := wsBuf[:totalNeeded]
 				off := 10
 				for _, u := range batch {
+					if u.Width <= 0 || u.Height <= 0 || u.Width > 32768 || u.Height > 32768 {
+						continue
+					}
 					needed := u.Width * u.Height * 4
 					fb[off] = wsMsgBitmap
 					binary.LittleEndian.PutUint16(fb[off+1:off+3], uint16(u.X))
@@ -663,9 +681,9 @@ func (d *Dispatcher) runSession(s *monitorSession, monIdx int) {
 					binary.LittleEndian.PutUint16(fb[off+5:off+7], uint16(u.Width))
 					binary.LittleEndian.PutUint16(fb[off+7:off+9], uint16(u.Height))
 					pixDst := fb[off+9 : off+9+needed]
-					if u.BitsPerPixel == 32 && u.TopDown {
+					if u.BitsPerPixel == 32 && u.TopDown && len(u.Data) >= needed {
 						copy(pixDst, u.Data[:needed])
-					} else {
+					} else if len(u.Data) >= u.Width*u.Height*(u.BitsPerPixel/8) {
 						display.ConvertToRGBA(pixDst, u.Data, u.Width, u.Height, u.BitsPerPixel, u.TopDown)
 					}
 					off += 9 + needed

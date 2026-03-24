@@ -199,7 +199,12 @@ func DecodeDataTPDU(data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("expected Data TPDU (0xF0), got 0x%02X", typeCode)
 	}
 
-	return data[li+1:], nil
+	offset := int(li) + 1
+	if offset > len(data) {
+		return nil, fmt.Errorf("data TPDU LI %d exceeds packet length %d", li, len(data))
+	}
+
+	return data[offset:], nil
 }
 
 // ProtocolName returns a human-readable name for a protocol flag

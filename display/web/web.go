@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"time"
 
 	rdp "gopher-rdp"
 	"gopher-rdp/display"
@@ -490,13 +491,18 @@ func handleWS(w http.ResponseWriter, r *http.Request, client *rdp.Client, log *s
 
 	// Reusable frame buffer for batched bitmap messages.
 	// Grows as needed; initial size covers one full-screen rect.
-	wsBuf := make([]byte, 10+1+8+width*height*4)
+	initPixels := width * height
+	if width > 0 && initPixels/width != height {
+		initPixels = 0 // overflow
+	}
+	wsBuf := make([]byte, 10+1+8+initPixels*4)
 
 	// Disconnect watcher: when RDP connection ends, notify browser and tear down.
 	go func() {
 		select {
 		case <-client.Done():
 			log.Info("RDP disconnected, notifying browser")
+			conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 			lockedWriteWSFrame(conn, []byte{wsMsgDisconnect})
 			conn.Close()
 			closeOnce.Do(func() { close(done) })
@@ -551,6 +557,9 @@ func handleWS(w http.ResponseWriter, r *http.Request, client *rdp.Client, log *s
 				// Format: [0x01][x:u16][y:u16][w:u16][h:u16][rgba...]... (repeated)
 				payloadLen := 0
 				for _, u := range batch {
+					if u.Width <= 0 || u.Height <= 0 || u.Width > 32768 || u.Height > 32768 {
+						continue
+					}
 					payloadLen += 1 + 8 + u.Width*u.Height*4
 				}
 				totalNeeded := 10 + payloadLen
@@ -560,6 +569,9 @@ func handleWS(w http.ResponseWriter, r *http.Request, client *rdp.Client, log *s
 				fb := wsBuf[:totalNeeded]
 				off := 10 // skip WS header room
 				for _, u := range batch {
+					if u.Width <= 0 || u.Height <= 0 || u.Width > 32768 || u.Height > 32768 {
+						continue
+					}
 					needed := u.Width * u.Height * 4
 					fb[off] = wsMsgBitmap
 					binary.LittleEndian.PutUint16(fb[off+1:off+3], uint16(u.X))
@@ -567,9 +579,9 @@ func handleWS(w http.ResponseWriter, r *http.Request, client *rdp.Client, log *s
 					binary.LittleEndian.PutUint16(fb[off+5:off+7], uint16(u.Width))
 					binary.LittleEndian.PutUint16(fb[off+7:off+9], uint16(u.Height))
 					pixDst := fb[off+9 : off+9+needed]
-					if u.BitsPerPixel == 32 && u.TopDown {
+					if u.BitsPerPixel == 32 && u.TopDown && len(u.Data) >= needed {
 						copy(pixDst, u.Data[:needed])
-					} else {
+					} else if len(u.Data) >= u.Width*u.Height*(u.BitsPerPixel/8) {
 						display.ConvertToRGBA(pixDst, u.Data, u.Width, u.Height, u.BitsPerPixel, u.TopDown)
 					}
 					off += 9 + needed

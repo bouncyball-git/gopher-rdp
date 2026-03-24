@@ -183,6 +183,10 @@ func readWSFrame(rw io.ReadWriter, buf []byte, log *slog.Logger) ([]byte, error)
 		}
 
 		// Read payload
+		const maxWSPayload = 64 * 1024 * 1024 // 64 MB
+		if payloadLen > maxWSPayload {
+			return nil, fmt.Errorf("WebSocket payload too large: %d bytes", payloadLen)
+		}
 		pLen := int(payloadLen)
 		payload := buf
 		if len(payload) < pLen {
