@@ -215,7 +215,7 @@ type Client struct {
 	pendingMonitors  []disp.MonitorLayout // queued multi-monitor resize (nil = none)
 
 	// Share session
-	shareID    uint32
+	shareID    atomic.Uint32
 	serverCaps uint32 // bitfield of cap types advertised by server (bit N = type N)
 	serverBpp  int    // server's advertised color depth (15, 16, 24, 32)
 
@@ -1232,21 +1232,22 @@ func (c *Client) mcsConnect() error {
 			bytesPerFrame := int(f.Channels) * int(f.BitsPerSample) / 8
 			framesPerTick := int(f.SamplesPerSec) / 100 // 10ms
 			silent := make([]byte, framesPerTick*bytesPerFrame)
+			handler := c.audinHandler
+			c.closeMu.Lock()
+			done := c.done
+			c.closeMu.Unlock()
 			go func() {
 				ticker := time.NewTicker(10 * time.Millisecond)
 				defer ticker.Stop()
 				for {
 					select {
 					case <-ticker.C:
-						if c.audinHandler == nil {
-							return
-						}
-						if err := c.audinHandler.SendAudioData(silent); err != nil {
+						if err := handler.SendAudioData(silent); err != nil {
 							return
 						}
 					case <-stop:
 						return
-					case <-c.done:
+					case <-done:
 						return
 					}
 				}
@@ -1919,7 +1920,7 @@ func (c *Client) handleCapabilitiesExchange() error {
 		return fmt.Errorf("%w: %v", ErrCapabilitiesFailed, err)
 	}
 
-	c.shareID = da.ShareID
+	c.shareID.Store(da.ShareID)
 	c.logPdu.LogAttrs(context.Background(), slog.LevelDebug, "Demand Active", sloghex.Hex8("shareID", da.ShareID), slog.Int("serverCaps", int(da.NumberCapabilities)))
 
 	// Parse server capabilities and build a bitfield for conditional cap echo.
@@ -1975,7 +1976,7 @@ func (c *Client) sendConfirmActive() error {
 		c.opts.Width, c.opts.Height, c.opts.Depth, c.opts.GFX, c.serverCaps, soundBeeps)
 
 	ca := &pdu.ConfirmActive{
-		ShareID:            c.shareID,
+		ShareID:            c.shareID.Load(),
 		SourceDescriptor:   []byte("MSTSC\x00"),
 		NumberCapabilities: capsCount,
 		CapabilitySets:     capsData,
@@ -2078,7 +2079,7 @@ func (c *Client) sendDataPDU(pduType2 uint8, payload []byte) error {
 		binary.LittleEndian.PutUint16(buf[off+4:off+6], c.userChannelID)
 
 		// Share Data Header (12 bytes)
-		binary.LittleEndian.PutUint32(buf[off+6:off+10], c.shareID)
+		binary.LittleEndian.PutUint32(buf[off+6:off+10], c.shareID.Load())
 		buf[off+10] = 0              // pad1
 		buf[off+11] = pdu.StreamLow  // streamID
 		binary.LittleEndian.PutUint16(buf[off+12:off+14], uint16(payloadLen))
@@ -2099,7 +2100,7 @@ func (c *Client) sendDataPDU(pduType2 uint8, payload []byte) error {
 		binary.LittleEndian.PutUint16(buf[off+4:off+6], c.userChannelID)
 
 		// Share Data Header (12 bytes)
-		binary.LittleEndian.PutUint32(buf[off+6:off+10], c.shareID)
+		binary.LittleEndian.PutUint32(buf[off+6:off+10], c.shareID.Load())
 		buf[off+10] = 0              // pad1
 		buf[off+11] = pdu.StreamLow  // streamID
 		binary.LittleEndian.PutUint16(buf[off+12:off+14], uint16(payloadLen))
@@ -2323,11 +2324,14 @@ func (c *Client) receiveLoop() {
 // Uses a 0×0 refresh request — a pure protocol-level keepalive that
 // does not inject any input events (avoids triggering Sticky Keys, etc.).
 func (c *Client) keepAliveLoop() {
+	c.closeMu.Lock()
+	done := c.done
+	c.closeMu.Unlock()
 	ticker := time.NewTicker(c.opts.HeartbeatTimeout / 2)
 	defer ticker.Stop()
 	for {
 		select {
-		case <-c.done:
+		case <-done:
 			return
 		case <-ticker.C:
 			if c.State() != StateConnected {
@@ -2341,11 +2345,14 @@ func (c *Client) keepAliveLoop() {
 // heartbeatLoop monitors lastReceived and triggers disconnect if the server
 // goes silent for longer than HeartbeatTimeout.
 func (c *Client) heartbeatLoop() {
+	c.closeMu.Lock()
+	done := c.done
+	c.closeMu.Unlock()
 	ticker := time.NewTicker(c.opts.HeartbeatTimeout / 2)
 	defer ticker.Stop()
 	for {
 		select {
-		case <-c.done:
+		case <-done:
 			return
 		case <-ticker.C:
 			last := time.Unix(0, c.lastReceived.Load())
@@ -2362,25 +2369,35 @@ func (c *Client) heartbeatLoop() {
 // preparing the client for a fresh Connect() call. Callbacks and reusable
 // buffers are preserved.
 func (c *Client) resetForReconnect() {
+	// Mark disconnected first so new Send* calls return ErrNotConnected.
+	c.setState(StateDisconnected)
+
 	if c.tlsConn != nil {
 		c.tlsConn.Close()
-		c.tlsConn = nil
 	}
 	if c.conn != nil {
 		c.conn.Close()
-		c.conn = nil
 	}
+
+	// Take writeMu to wait for any in-flight sendDataPDU/sendChannelData
+	// to finish, then zero the fields they read.
+	c.writeMu.Lock()
+	c.tlsConn = nil
+	c.conn = nil
 	c.tpktConn = nil
+	c.crypto = nil
+	c.userChannelID = 0
+	c.ioChannelID = 0
+	c.channelMap = nil
+	c.channelOpts = nil
+	c.writeMu.Unlock()
 
 	c.selectedProtocol = 0
 	c.tlsMinVersion = 0
 	c.tlsMaxVersion = 0
 	c.credsspVersion = 0
-	c.userChannelID = 0
-	c.ioChannelID = 0
 	c.channelIDs = nil
 	c.channelNames = nil
-	c.channelMap = nil
 	c.channelHandlers = nil
 	c.dvc = nil
 	if c.egfxHandler != nil {
@@ -2407,7 +2424,7 @@ func (c *Client) resetForReconnect() {
 	c.serverCore = nil
 	c.serverSec = nil
 	c.crypto = nil
-	c.shareID = 0
+	c.shareID.Store(0)
 	c.serverCaps = 0
 
 	c.fragBuf = c.fragBuf[:0]
@@ -2427,8 +2444,6 @@ func (c *Client) resetForReconnect() {
 	c.closed = false
 	c.done = make(chan struct{})
 	c.closeMu.Unlock()
-
-	c.setState(StateDisconnected)
 }
 
 // reconnectLoop attempts to re-establish the connection with retries.
@@ -5428,7 +5443,10 @@ func (c *Client) RequestClipboardImage() error {
 // Done returns a channel that is closed when the connection ends,
 // whether by explicit Close() or unexpected disconnect.
 func (c *Client) Done() <-chan struct{} {
-	return c.done
+	c.closeMu.Lock()
+	done := c.done
+	c.closeMu.Unlock()
+	return done
 }
 
 // SendKeyboard sends a keyboard event

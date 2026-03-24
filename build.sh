@@ -90,6 +90,29 @@ case "$MODE" in
     CGO_ENABLED=0 go build -ldflags='-s -w' -trimpath -o "$OUTPUT" ./client
     echo "==> Done: ./${OUTPUT} (web-only, no GUI, no CGO)"
     ;;
+  race)
+    echo "==> Building (race detector, web-only)..."
+    go build -race -o "${OUTPUT}-race" ./client
+    echo "==> Done: ./${OUTPUT}-race (race detector enabled)"
+    ;;
+  race-gui)
+    TAGS="gui"
+    echo "==> Building (race detector, gui${TARGET:+, ${GOOS}/${GOARCH}})..."
+    go build -race -tags "$TAGS" -o "${OUTPUT}-race" ./client
+    echo "==> Done: ./${OUTPUT}-race (race detector, gui)"
+    ;;
+  test)
+    echo "==> Vetting..."
+    go vet ./...
+    echo "==> Testing..."
+    go test -count=1 ./...
+    ;;
+  test-race)
+    echo "==> Vetting..."
+    go vet ./...
+    echo "==> Testing (race detector)..."
+    go test -race -count=1 ./...
+    ;;
   all)
     # Build web-only (CGO_ENABLED=0) binaries for all major platforms.
     # GUI builds require platform-specific C toolchains and are skipped here;
@@ -108,11 +131,19 @@ case "$MODE" in
     ls -lh "${OUTDIR}"/gopher-rdp-*
     ;;
   *)
-    echo "Usage: $0 [debug|prod|web|all] [os/arch]"
-    echo "  debug  - GUI + web, no compiler optimizations, full symbol info (for dlv/gdb)"
-    echo "  prod   - GUI + web, stripped, trimmed paths (default)"
-    echo "  web    - Web-only, no GUI/X11/CGO dependency (headless/service)"
-    echo "  all    - Cross-compile web-only binaries for all platforms into dist/"
+    echo "Usage: $0 [debug|prod|web|race|race-gui|test|test-race|all] [os/arch]"
+    echo ""
+    echo "Build modes:"
+    echo "  debug     - GUI + web, no compiler optimizations, full symbol info (for dlv/gdb)"
+    echo "  prod      - GUI + web, stripped, trimmed paths (default)"
+    echo "  web       - Web-only, no GUI/X11/CGO dependency (headless/service)"
+    echo "  race      - Web-only with race detector enabled"
+    echo "  race-gui  - GUI + web with race detector enabled"
+    echo "  all       - Cross-compile web-only binaries for all platforms into dist/"
+    echo ""
+    echo "Test modes:"
+    echo "  test      - Run go vet + go test"
+    echo "  test-race - Run go vet + go test with race detector"
     echo ""
     echo "Cross-compilation examples:"
     echo "  $0 prod windows/amd64"
