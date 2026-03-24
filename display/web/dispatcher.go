@@ -395,13 +395,19 @@ func (d *Dispatcher) Attach(monitorIndex int, conn *wsConn, w, h int) error {
 			return fmt.Errorf("monitor %d has no resolution", monitorIndex)
 		}
 		d.log.Info("first monitor connected, starting RDP", "monitor", monitorIndex)
-		client, err := d.connectRDP()
+		client, err := d.createRDPClient()
 		if err != nil {
 			d.mu.Unlock()
 			return err
 		}
 		d.client = client
 		d.registerCallbacks()
+		if err := client.Connect(); err != nil {
+			d.client = nil
+			d.mu.Unlock()
+			return fmt.Errorf("RDP connect: %w", err)
+		}
+		d.log.Info("RDP connected", "width", d.opts.Width, "height", d.opts.Height)
 		go func() {
 			<-client.Done()
 			select {
@@ -475,19 +481,15 @@ func (d *Dispatcher) repositionMonitors() {
 	}
 }
 
-// connectRDP creates and connects the RDP client using the current monitor
-// topology. Must be called with d.mu held.
-func (d *Dispatcher) connectRDP() (*rdp.Client, error) {
-	// Build monitor topology from resolved monitors.
+// createRDPClient creates the RDP client without connecting.
+// Must be called with d.mu held. Caller should register callbacks
+// before calling client.Connect().
+func (d *Dispatcher) createRDPClient() (*rdp.Client, error) {
 	d.updateOpts()
 	client, err := rdp.NewClient(d.opts)
 	if err != nil {
 		return nil, fmt.Errorf("create RDP client: %w", err)
 	}
-	if err := client.Connect(); err != nil {
-		return nil, fmt.Errorf("RDP connect: %w", err)
-	}
-	d.log.Info("RDP connected", "width", d.opts.Width, "height", d.opts.Height)
 	return client, nil
 }
 

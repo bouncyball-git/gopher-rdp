@@ -266,7 +266,8 @@ type Client struct {
 	fragBuf  []byte // reusable reassembly buffer (grows, reset via fragBuf[:0])
 	fragCode byte   // update Code of the in-progress fragment sequence
 
-	// Callbacks
+	// Callbacks (protected by cbMu — use load*/On* methods, not direct access)
+	cbMu            sync.RWMutex
 	onBitmap        func(*BitmapUpdate)
 	onStridedBitmap func(x, y, w, h int, data []byte, stride int)
 	onH264Frame     func(*egfx.H264Frame) // H.264 pass-through callback
@@ -967,27 +968,29 @@ func (c *Client) mcsConnect() error {
 				return c.dvc.SendData(ch.ID, data)
 			}, c.opts.Logger.With("component", "EGFX"))
 			c.egfxHandler.SetClearCodecDecoder(clearcodec.New(c.opts.Logger.With("component", "CLEARCODEC")))
-			if c.onH264Frame != nil && !c.opts.NoAVC {
+			if c.loadOnH264Frame() != nil && !c.opts.NoAVC {
 				c.egfxHandler.SetAVCEnabled(true)
 				c.egfxHandler.OnH264Frame(func(f *egfx.H264Frame) {
-					c.onH264Frame(f)
+					c.loadOnH264Frame()(f)
 				})
 			}
 			c.egfxHandler.OnStridedBitmap(func(surfID uint16, x, y, w, h int, data []byte, stride int) {
 				if c.framebuf != nil {
 					c.framebuf.WriteRectStridedTopDown(x, y, w, h, data, stride)
 				}
-				if c.onStridedBitmap != nil {
-					c.onStridedBitmap(x, y, w, h, data, stride)
+				if fn := c.loadOnStridedBitmap(); fn != nil {
+					fn(x, y, w, h, data, stride)
 				}
 			})
-			if c.onBitmap != nil && c.onStridedBitmap == nil {
+			if c.loadOnBitmap() != nil && c.loadOnStridedBitmap() == nil {
 				c.egfxHandler.OnBitmap(func(surfID uint16, x, y, w, h int, data []byte) {
 					c.egfxBitmapUpdate = BitmapUpdate{
 						X: x, Y: y, Width: w, Height: h,
 						BitsPerPixel: 32, TopDown: true, Data: data,
 					}
-					c.onBitmap(&c.egfxBitmapUpdate)
+					if fn := c.loadOnBitmap(); fn != nil {
+					fn(&c.egfxBitmapUpdate)
+				}
 				})
 			}
 			c.egfxHandler.OnBeginPaint(func() {
@@ -1005,8 +1008,8 @@ func (c *Client) mcsConnect() error {
 					c.framebuf.Resize(w, h)
 				}
 				c.framebufMu.Unlock()
-				if c.onResize != nil {
-					c.onResize(w, h)
+				if fn := c.loadOnResize(); fn != nil {
+					fn(w, h)
 				}
 			})
 			ch.SetHandler(func(data []byte) {
@@ -1049,13 +1052,13 @@ func (c *Client) mcsConnect() error {
 				PCMOnly: c.opts.AudioOut.PCMOnly,
 			})
 			c.rdpsndHandler.OnWaveData(func(s *rdpsnd.AudioSample) {
-				if c.onAudioData != nil {
-					c.onAudioData(s)
+				if fn := c.loadOnAudioData(); fn != nil {
+					fn(s)
 				}
 			})
 			c.rdpsndHandler.OnClose(func() {
-				if c.onAudioClose != nil {
-					c.onAudioClose()
+				if fn := c.loadOnAudioClose(); fn != nil {
+					fn()
 				}
 			})
 			ch.SetHandler(func(data []byte) {
@@ -1164,8 +1167,8 @@ func (c *Client) mcsConnect() error {
 			})
 			c.log.LogAttrs(context.Background(), slog.LevelInfo, "URBDRC channel opened", slog.Int("id", int(chID)))
 		}
-		if c.onDynChannel != nil {
-			c.onDynChannel(name, ch)
+		if fn := c.loadOnDynChannel(); fn != nil {
+			fn(name, ch)
 		}
 	})
 	c.registerChannelHandler("drdynvc", func(_ uint16, data []byte) {
@@ -1183,18 +1186,18 @@ func (c *Client) mcsConnect() error {
 			return c.sendChannelData("cliprdr", data)
 		}, c.log.With("component", "CLIPRDR"))
 		c.clipHandler.OnRemoteCopy(func(hasText, hasImage bool) {
-			if c.onClipboardUpdate != nil {
-				c.onClipboardUpdate(hasText, hasImage)
+			if fn := c.loadOnClipboardUpdate(); fn != nil {
+				fn(hasText, hasImage)
 			}
 		})
 		c.clipHandler.OnTextData(func(text string) {
-			if c.onClipboardText != nil {
-				c.onClipboardText(text)
+			if fn := c.loadOnClipboardText(); fn != nil {
+				fn(text)
 			}
 		})
 		c.clipHandler.OnImageData(func(pngData []byte) {
-			if c.onClipboardImage != nil {
-				c.onClipboardImage(pngData)
+			if fn := c.loadOnClipboardImage(); fn != nil {
+				fn(pngData)
 			}
 		})
 		c.registerChannelHandler("cliprdr", func(_ uint16, data []byte) {
@@ -1248,16 +1251,16 @@ func (c *Client) mcsConnect() error {
 					}
 				}
 			}()
-			if c.onAudioInputOpen != nil {
-				c.onAudioInputOpen(f)
+			if fn := c.loadOnAudioInputOpen(); fn != nil {
+				fn(f)
 			}
 		})
 		c.audinHandler.OnClose(func() {
 			c.silenceMu.Lock()
 			c.stopSilenceFillLocked()
 			c.silenceMu.Unlock()
-			if c.onAudioInputClose != nil {
-				c.onAudioInputClose()
+			if fn := c.loadOnAudioInputClose(); fn != nil {
+				fn()
 			}
 		})
 	}
@@ -2449,8 +2452,8 @@ func (c *Client) reconnectLoop() {
 			continue
 		}
 		c.log.LogAttrs(context.Background(), slog.LevelInfo, "reconnected successfully")
-		if c.onReconnected != nil {
-			c.onReconnected()
+		if fn := c.loadOnReconnected(); fn != nil {
+			fn()
 		}
 		return
 	}
@@ -2458,8 +2461,8 @@ func (c *Client) reconnectLoop() {
 	c.closeMu.Lock()
 	c.closed = true
 	c.closeMu.Unlock()
-	if c.onDisconnect != nil {
-		c.onDisconnect(fmt.Errorf("%w: %d attempts exhausted", ErrReconnectFailed, max))
+	if fn := c.loadOnDisconnect(); fn != nil {
+		fn(fmt.Errorf("%w: %d attempts exhausted", ErrReconnectFailed, max))
 	}
 }
 
@@ -2488,8 +2491,8 @@ func (c *Client) resizeViaReconnect() {
 		<-recvDone
 	}
 
-	if c.onReconnecting != nil {
-		c.onReconnecting()
+	if fn := c.loadOnReconnecting(); fn != nil {
+		fn()
 	}
 
 	c.resetForReconnect()
@@ -2499,8 +2502,8 @@ func (c *Client) resizeViaReconnect() {
 		c.reconnecting = false
 		c.closed = true
 		c.closeMu.Unlock()
-		if c.onDisconnect != nil {
-			c.onDisconnect(err)
+		if fn := c.loadOnDisconnect(); fn != nil {
+			fn(err)
 		}
 		return
 	}
@@ -2509,8 +2512,8 @@ func (c *Client) resizeViaReconnect() {
 	c.closeMu.Lock()
 	c.reconnecting = false
 	c.closeMu.Unlock()
-	if c.onReconnected != nil {
-		c.onReconnected()
+	if fn := c.loadOnReconnected(); fn != nil {
+		fn()
 	}
 }
 
@@ -2533,15 +2536,15 @@ func (c *Client) handleDisconnect(err error) {
 	if c.opts.AutoReconnect && !errors.Is(err, ErrDisconnected) {
 		c.reconnecting = true
 		c.closeMu.Unlock()
-		if c.onReconnecting != nil {
-			c.onReconnecting()
+		if fn := c.loadOnReconnecting(); fn != nil {
+			fn()
 		}
 		go c.reconnectLoop()
 	} else {
 		c.closed = true
 		c.closeMu.Unlock()
-		if c.onDisconnect != nil {
-			c.onDisconnect(err)
+		if fn := c.loadOnDisconnect(); fn != nil {
+			fn(err)
 		}
 	}
 }
@@ -2759,8 +2762,8 @@ func (c *Client) handleReactivation() {
 		c.framebuf.Resize(int(c.opts.Width), int(c.opts.Height))
 	}
 	c.framebufMu.Unlock()
-	if c.onResize != nil {
-		c.onResize(int(c.opts.Width), int(c.opts.Height))
+	if fn := c.loadOnResize(); fn != nil {
+		fn(int(c.opts.Width), int(c.opts.Height))
 	}
 
 	// Read the new Demand Active from the server
@@ -3029,8 +3032,8 @@ func (c *Client) handleSurfaceBits(destLeft, destTop int, codecID byte, width, h
 	if c.framebuf != nil {
 		c.framebuf.WriteRect(destLeft, destTop, width, height, data)
 	}
-	if c.onBitmap != nil {
-		c.onBitmap(&BitmapUpdate{
+	if fn := c.loadOnBitmap(); fn != nil {
+		fn(&BitmapUpdate{
 			X: destLeft, Y: destTop, Width: width, Height: height,
 			BitsPerPixel: 32,
 			Data:         data,
@@ -3123,7 +3126,8 @@ func (c *Client) executeOrder(state *orders.DecoderState, ord *orders.Order) {
 		slog.Int("bL", int(state.Bounds.Left)), slog.Int("bT", int(state.Bounds.Top)),
 		slog.Int("bR", int(state.Bounds.Right)), slog.Int("bB", int(state.Bounds.Bottom)))
 
-	if c.onBitmap == nil {
+	onBitmapFn := c.loadOnBitmap()
+	if onBitmapFn == nil {
 		return
 	}
 
@@ -3286,7 +3290,7 @@ func (c *Client) executeOrder(state *orders.DecoderState, ord *orders.Order) {
 		}
 	}
 
-	c.onBitmap(&BitmapUpdate{
+	onBitmapFn(&BitmapUpdate{
 		X:            x,
 		Y:            y,
 		Width:        w,
@@ -3300,7 +3304,8 @@ func (c *Client) executeOrder(state *orders.DecoderState, ord *orders.Order) {
 // via onBitmap. Used for orders that render directly into the framebuffer
 // (glyph orders that render directly via MS-RDPEGDI 2.2.2.2.1.2.5).
 func (c *Client) onBitmapFromFB(x, y, w, h int) {
-	if w <= 0 || h <= 0 || c.framebuf == nil {
+	fn := c.loadOnBitmap()
+	if w <= 0 || h <= 0 || c.framebuf == nil || fn == nil {
 		return
 	}
 	need := w * h * 4
@@ -3310,7 +3315,7 @@ func (c *Client) onBitmapFromFB(x, y, w, h int) {
 		c.scrBltBuf = make([]byte, need)
 	}
 	c.framebuf.ReadRect(c.scrBltBuf, x, y, w, h)
-	c.onBitmap(&BitmapUpdate{
+	fn(&BitmapUpdate{
 		X:            x,
 		Y:            y,
 		Width:        w,
@@ -3464,8 +3469,8 @@ func (c *Client) executeDstBlt(s *orders.DstBltState) {
 		}
 	}
 
-	if c.onBitmap != nil {
-		c.onBitmap(&BitmapUpdate{
+	if fn := c.loadOnBitmap(); fn != nil {
+		fn(&BitmapUpdate{
 			X:            x,
 			Y:            y,
 			Width:        w,
@@ -3558,8 +3563,8 @@ func (c *Client) executePatBlt(s *orders.PatBltState) {
 				c.glyphRenderBuf[oi+3] = 0xFF
 			}
 		}
-		if c.onBitmap != nil {
-			c.onBitmap(&BitmapUpdate{
+		if fn := c.loadOnBitmap(); fn != nil {
+			fn(&BitmapUpdate{
 				X: x, Y: y, Width: w, Height: h,
 				BitsPerPixel: 32, Data: c.glyphRenderBuf,
 			})
@@ -3582,8 +3587,8 @@ func (c *Client) executePatBlt(s *orders.PatBltState) {
 				c.glyphRenderBuf[oi+3] = 0xFF
 			}
 		}
-		if c.onBitmap != nil {
-			c.onBitmap(&BitmapUpdate{
+		if fn := c.loadOnBitmap(); fn != nil {
+			fn(&BitmapUpdate{
 				X: x, Y: y, Width: w, Height: h,
 				BitsPerPixel: 32, Data: c.glyphRenderBuf,
 			})
@@ -3621,8 +3626,8 @@ func (c *Client) executePatBlt(s *orders.PatBltState) {
 				c.glyphRenderBuf[oi+3] = 0xFF
 			}
 		}
-		if c.onBitmap != nil {
-			c.onBitmap(&BitmapUpdate{
+		if fn := c.loadOnBitmap(); fn != nil {
+			fn(&BitmapUpdate{
 				X: x, Y: y, Width: w, Height: h,
 				BitsPerPixel: 32, Data: c.glyphRenderBuf,
 			})
@@ -3738,8 +3743,8 @@ func (c *Client) executePatBlt(s *orders.PatBltState) {
 		}
 	}
 
-	if c.onBitmap != nil {
-		c.onBitmap(&BitmapUpdate{
+	if fn := c.loadOnBitmap(); fn != nil {
+		fn(&BitmapUpdate{
 			X:            x,
 			Y:            y,
 			Width:        w,
@@ -3782,8 +3787,8 @@ func (c *Client) executeScrBlt(s *orders.ScrBltState) {
 			srcX0, srcY0,
 			nw, nh, c.scrBltBuf)
 
-		if c.onBitmap != nil {
-			c.onBitmap(&BitmapUpdate{
+		if fn := c.loadOnBitmap(); fn != nil {
+			fn(&BitmapUpdate{
 				X:            nx,
 				Y:            ny,
 				Width:        nw,
@@ -3881,8 +3886,8 @@ func (c *Client) executeScrBlt(s *orders.ScrBltState) {
 		}
 	}
 
-	if c.onBitmap != nil {
-		c.onBitmap(&BitmapUpdate{
+	if fn := c.loadOnBitmap(); fn != nil {
+		fn(&BitmapUpdate{
 			X:            dstX,
 			Y:            dstY,
 			Width:        w,
@@ -4030,8 +4035,8 @@ func (c *Client) executeMemBlt(s *orders.MemBltState) {
 		}
 	}
 
-	if c.onBitmap != nil {
-		c.onBitmap(&BitmapUpdate{
+	if fn := c.loadOnBitmap(); fn != nil {
+		fn(&BitmapUpdate{
 			X:            dstX,
 			Y:            dstY,
 			Width:        w,
@@ -4044,7 +4049,8 @@ func (c *Client) executeMemBlt(s *orders.MemBltState) {
 
 // emitDirtyRect reads a bounding box from the framebuffer and emits it as a BitmapUpdate.
 func (c *Client) emitDirtyRect(x, y, w, h int) {
-	if c.onBitmap == nil || w <= 0 || h <= 0 {
+	onBitmapFn := c.loadOnBitmap()
+	if onBitmapFn == nil || w <= 0 || h <= 0 {
 		return
 	}
 	// Clamp to framebuffer bounds
@@ -4072,7 +4078,7 @@ func (c *Client) emitDirtyRect(x, y, w, h int) {
 		c.scrBltBuf = make([]byte, need)
 	}
 	c.framebuf.ReadRect(c.scrBltBuf, x, y, w, h)
-	c.onBitmap(&BitmapUpdate{
+	onBitmapFn(&BitmapUpdate{
 		X: x, Y: y, Width: w, Height: h,
 		BitsPerPixel: 32,
 		Data:         c.scrBltBuf[:need],
@@ -4470,8 +4476,8 @@ func (c *Client) executeMem3Blt(s *orders.Mem3BltState) {
 		}
 	}
 
-	if c.onBitmap != nil {
-		c.onBitmap(&BitmapUpdate{
+	if fn := c.loadOnBitmap(); fn != nil {
+		fn(&BitmapUpdate{
 			X:            dstX,
 			Y:            dstY,
 			Width:        w,
@@ -4505,15 +4511,15 @@ func (c *Client) handlePaletteUpdate(data []byte) {
 }
 
 func (c *Client) handlePointerNull() {
-	if c.onPointer != nil {
-		c.onPointer(&PointerUpdate{Type: PointerNull})
+	if fn := c.loadOnPointer(); fn != nil {
+		fn(&PointerUpdate{Type: PointerNull})
 	}
 }
 
 // handlePointerDefault notifies the callback to restore the default OS cursor.
 func (c *Client) handlePointerDefault() {
-	if c.onPointer != nil {
-		c.onPointer(&PointerUpdate{Type: PointerDefault})
+	if fn := c.loadOnPointer(); fn != nil {
+		fn(&PointerUpdate{Type: PointerDefault})
 	}
 }
 
@@ -4558,12 +4564,12 @@ func (c *Client) handlePointerCached(data []byte) {
 		return
 	}
 	if int(idx) < len(c.pointerCache) && c.pointerCache[idx] != nil {
-		if c.onPointer != nil {
-			c.onPointer(c.pointerCache[idx])
+		if fn := c.loadOnPointer(); fn != nil {
+			fn(c.pointerCache[idx])
 		}
 	} else {
-		if c.onPointer != nil {
-			c.onPointer(&PointerUpdate{Type: PointerCached, CacheIndex: idx})
+		if fn := c.loadOnPointer(); fn != nil {
+			fn(&PointerUpdate{Type: PointerCached, CacheIndex: idx})
 		}
 	}
 }
@@ -4585,8 +4591,8 @@ func (c *Client) cacheAndNotifyPointer(pu *pointer.PointerUpdate) {
 	if int(pu.CacheIndex) < len(c.pointerCache) {
 		c.pointerCache[pu.CacheIndex] = update
 	}
-	if c.onPointer != nil {
-		c.onPointer(update)
+	if fn := c.loadOnPointer(); fn != nil {
+		fn(update)
 	}
 }
 
@@ -4806,7 +4812,8 @@ func (c *Client) handleFastPathBitmap(data []byte) {
 // Shared by slow-path and fast-path bitmap update handlers.
 // Uses a single stack-allocated BitmapUpdate reused per iteration (callback is synchronous).
 func (c *Client) processBitmapRects(rects []pdu.BitmapData) {
-	if c.onBitmap == nil {
+	onBitmapFn := c.loadOnBitmap()
+	if onBitmapFn == nil {
 		return
 	}
 
@@ -4989,7 +4996,7 @@ func (c *Client) processBitmapRects(rects []pdu.BitmapData) {
 			IsCompressed: false,
 			Data:         data,
 		}
-		c.onBitmap(&update)
+		onBitmapFn(&update)
 		if tracing {
 			cbTotal += time.Since(t0)
 		}
@@ -5018,9 +5025,140 @@ func (c *Client) setState(state ConnectionState) {
 	c.stateMu.Unlock()
 }
 
+
+// callback loaders — read under cbMu.RLock for concurrent access from any goroutine.
+
+func (c *Client) loadOnBitmap() func(*BitmapUpdate) {
+	c.cbMu.RLock()
+	fn := c.onBitmap
+	c.cbMu.RUnlock()
+	return fn
+}
+
+func (c *Client) loadOnStridedBitmap() func(x, y, w, h int, data []byte, stride int) {
+	c.cbMu.RLock()
+	fn := c.onStridedBitmap
+	c.cbMu.RUnlock()
+	return fn
+}
+
+func (c *Client) loadOnH264Frame() func(*egfx.H264Frame) {
+	c.cbMu.RLock()
+	fn := c.onH264Frame
+	c.cbMu.RUnlock()
+	return fn
+}
+
+func (c *Client) loadOnBeginPaint() func() {
+	c.cbMu.RLock()
+	fn := c.onBeginPaint
+	c.cbMu.RUnlock()
+	return fn
+}
+
+func (c *Client) loadOnEndPaint() func() {
+	c.cbMu.RLock()
+	fn := c.onEndPaint
+	c.cbMu.RUnlock()
+	return fn
+}
+
+func (c *Client) loadOnPointer() func(*PointerUpdate) {
+	c.cbMu.RLock()
+	fn := c.onPointer
+	c.cbMu.RUnlock()
+	return fn
+}
+
+func (c *Client) loadOnResize() func(width, height int) {
+	c.cbMu.RLock()
+	fn := c.onResize
+	c.cbMu.RUnlock()
+	return fn
+}
+
+func (c *Client) loadOnDynChannel() func(name string, ch *dvc.DynChannel) {
+	c.cbMu.RLock()
+	fn := c.onDynChannel
+	c.cbMu.RUnlock()
+	return fn
+}
+
+func (c *Client) loadOnDisconnect() func(error) {
+	c.cbMu.RLock()
+	fn := c.onDisconnect
+	c.cbMu.RUnlock()
+	return fn
+}
+
+func (c *Client) loadOnReconnecting() func() {
+	c.cbMu.RLock()
+	fn := c.onReconnecting
+	c.cbMu.RUnlock()
+	return fn
+}
+
+func (c *Client) loadOnReconnected() func() {
+	c.cbMu.RLock()
+	fn := c.onReconnected
+	c.cbMu.RUnlock()
+	return fn
+}
+
+func (c *Client) loadOnClipboardUpdate() func(hasText, hasImage bool) {
+	c.cbMu.RLock()
+	fn := c.onClipboardUpdate
+	c.cbMu.RUnlock()
+	return fn
+}
+
+func (c *Client) loadOnClipboardText() func(text string) {
+	c.cbMu.RLock()
+	fn := c.onClipboardText
+	c.cbMu.RUnlock()
+	return fn
+}
+
+func (c *Client) loadOnClipboardImage() func(pngData []byte) {
+	c.cbMu.RLock()
+	fn := c.onClipboardImage
+	c.cbMu.RUnlock()
+	return fn
+}
+
+func (c *Client) loadOnAudioData() func(*rdpsnd.AudioSample) {
+	c.cbMu.RLock()
+	fn := c.onAudioData
+	c.cbMu.RUnlock()
+	return fn
+}
+
+func (c *Client) loadOnAudioClose() func() {
+	c.cbMu.RLock()
+	fn := c.onAudioClose
+	c.cbMu.RUnlock()
+	return fn
+}
+
+func (c *Client) loadOnAudioInputOpen() func(audin.AudioFormat) {
+	c.cbMu.RLock()
+	fn := c.onAudioInputOpen
+	c.cbMu.RUnlock()
+	return fn
+}
+
+func (c *Client) loadOnAudioInputClose() func() {
+	c.cbMu.RLock()
+	fn := c.onAudioInputClose
+	c.cbMu.RUnlock()
+	return fn
+}
+
 // OnBitmap sets the callback for bitmap updates
 func (c *Client) OnBitmap(fn func(*BitmapUpdate)) {
+	c.cbMu.Lock()
 	c.onBitmap = fn
+	c.cbMu.Unlock()
 }
 
 // OnStridedBitmap sets the callback for EGFX bitmap updates with strided surface data.
@@ -5028,7 +5166,9 @@ func (c *Client) OnBitmap(fn func(*BitmapUpdate)) {
 // stride is the byte offset between consecutive rows (may be wider than w*4).
 // This is only called for GFX pipeline updates. Non-GFX updates still use OnBitmap.
 func (c *Client) OnStridedBitmap(fn func(x, y, w, h int, data []byte, stride int)) {
+	c.cbMu.Lock()
 	c.onStridedBitmap = fn
+	c.cbMu.Unlock()
 }
 
 // OnH264Frame sets the callback for H.264 pass-through frames.
@@ -5036,7 +5176,9 @@ func (c *Client) OnStridedBitmap(fn func(x, y, w, h int, data []byte, stride int
 // and forwards raw H.264 NAL units instead of decoding them.
 // Must be set before Connect().
 func (c *Client) OnH264Frame(fn func(*egfx.H264Frame)) {
+	c.cbMu.Lock()
 	c.onH264Frame = fn
+	c.cbMu.Unlock()
 }
 
 // OnBeginPaint sets the callback invoked before a batch of display updates
@@ -5044,21 +5186,25 @@ func (c *Client) OnH264Frame(fn func(*egfx.H264Frame)) {
 // The display can acquire a lock here so that all per-rect bitmap callbacks
 // within the batch are applied atomically.
 func (c *Client) OnBeginPaint(fn func()) {
+	c.cbMu.Lock()
 	c.onBeginPaint = fn
+	c.cbMu.Unlock()
 }
 
 // OnEndPaint sets the callback invoked after all updates in a batch have
 // been emitted. The display should release any lock acquired in OnBeginPaint.
 func (c *Client) OnEndPaint(fn func()) {
+	c.cbMu.Lock()
 	c.onEndPaint = fn
+	c.cbMu.Unlock()
 }
 
 // beginPaint calls the OnBeginPaint callback if not already inside a paint.
 // Reentrant-safe: nested calls (e.g. EGFX inside a fast-path PDU) are no-ops.
 func (c *Client) beginPaint() {
-	if !c.painting && c.onBeginPaint != nil {
+	if fn := c.loadOnBeginPaint(); !c.painting && fn != nil {
 		c.painting = true
-		c.onBeginPaint()
+		fn()
 	}
 }
 
@@ -5066,93 +5212,119 @@ func (c *Client) beginPaint() {
 func (c *Client) endPaint() {
 	if c.painting {
 		c.painting = false
-		if c.onEndPaint != nil {
-			c.onEndPaint()
+		if fn := c.loadOnEndPaint(); fn != nil {
+			fn()
 		}
 	}
 }
 
 // OnPointer sets the callback for pointer (cursor) updates
 func (c *Client) OnPointer(fn func(*PointerUpdate)) {
+	c.cbMu.Lock()
 	c.onPointer = fn
+	c.cbMu.Unlock()
 }
 
 // OnResize sets the callback invoked after the server completes a session resize
 // (deactivation/reactivation). The new width and height are in pixels.
 func (c *Client) OnResize(fn func(width, height int)) {
+	c.cbMu.Lock()
 	c.onResize = fn
+	c.cbMu.Unlock()
 }
 
 // OnDynChannel sets the callback for when the server creates a dynamic virtual channel.
 func (c *Client) OnDynChannel(fn func(name string, ch *dvc.DynChannel)) {
+	c.cbMu.Lock()
 	c.onDynChannel = fn
+	c.cbMu.Unlock()
 }
 
 // OnDisconnect sets the callback for disconnection events.
 // With auto-reconnect enabled, this only fires after all attempts are exhausted.
 func (c *Client) OnDisconnect(fn func(error)) {
+	c.cbMu.Lock()
 	c.onDisconnect = fn
+	c.cbMu.Unlock()
 }
 
 // OnReconnecting sets the callback fired when auto-reconnect starts.
 func (c *Client) OnReconnecting(fn func()) {
+	c.cbMu.Lock()
 	c.onReconnecting = fn
+	c.cbMu.Unlock()
 }
 
 // OnReconnected sets the callback fired after a successful auto-reconnect.
 func (c *Client) OnReconnected(fn func()) {
+	c.cbMu.Lock()
 	c.onReconnected = fn
+	c.cbMu.Unlock()
 }
 
 // GetOnDisconnect returns the current disconnect callback.
-func (c *Client) GetOnDisconnect() func(error) { return c.onDisconnect }
+func (c *Client) GetOnDisconnect() func(error) { return c.loadOnDisconnect() }
 
 // GetOnReconnecting returns the current reconnecting callback.
-func (c *Client) GetOnReconnecting() func() { return c.onReconnecting }
+func (c *Client) GetOnReconnecting() func() { return c.loadOnReconnecting() }
 
 // GetOnReconnected returns the current reconnected callback.
-func (c *Client) GetOnReconnected() func() { return c.onReconnected }
+func (c *Client) GetOnReconnected() func() { return c.loadOnReconnected() }
 
 // OnClipboardUpdate sets the callback invoked when the remote clipboard changes.
 // hasText is true if the server advertises CF_UNICODETEXT; hasImage is true if
 // the server advertises CF_DIB. Call RequestClipboard / RequestClipboardImage
 // to fetch the data.
 func (c *Client) OnClipboardUpdate(fn func(hasText, hasImage bool)) {
+	c.cbMu.Lock()
 	c.onClipboardUpdate = fn
+	c.cbMu.Unlock()
 }
 
 // OnClipboardText sets the callback invoked when clipboard text data arrives
 // from the server (in response to RequestClipboard).
 func (c *Client) OnClipboardText(fn func(text string)) {
+	c.cbMu.Lock()
 	c.onClipboardText = fn
+	c.cbMu.Unlock()
 }
 
 // OnClipboardImage sets the callback invoked when clipboard image data arrives
 // from the server (in response to RequestClipboardImage). The data is PNG-encoded.
 func (c *Client) OnClipboardImage(fn func(pngData []byte)) {
+	c.cbMu.Lock()
 	c.onClipboardImage = fn
+	c.cbMu.Unlock()
 }
 
 // OnAudioData sets the callback invoked when decoded PCM audio arrives
 // from the server via the rdpsnd channel.
 func (c *Client) OnAudioData(fn func(*rdpsnd.AudioSample)) {
+	c.cbMu.Lock()
 	c.onAudioData = fn
+	c.cbMu.Unlock()
 }
 
 // OnAudioClose sets the callback invoked when the server closes the audio channel.
 func (c *Client) OnAudioClose(fn func()) {
+	c.cbMu.Lock()
 	c.onAudioClose = fn
+	c.cbMu.Unlock()
 }
 
 // OnAudioInputOpen sets the callback invoked when the server opens the audio
 // input channel and microphone capture should begin with the given format.
 func (c *Client) OnAudioInputOpen(fn func(audin.AudioFormat)) {
+	c.cbMu.Lock()
 	c.onAudioInputOpen = fn
+	c.cbMu.Unlock()
 }
 
 // OnAudioInputClose sets the callback invoked when audio input recording stops.
 func (c *Client) OnAudioInputClose(fn func()) {
+	c.cbMu.Lock()
 	c.onAudioInputClose = fn
+	c.cbMu.Unlock()
 }
 
 // SendAudioInput sends raw PCM microphone audio to the server.

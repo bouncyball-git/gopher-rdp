@@ -2,4 +2,5 @@
 !gopher-rdp.conf
 gopher-rdp.log
 gopher-rdp
+gopher-rdp-race
 dist
