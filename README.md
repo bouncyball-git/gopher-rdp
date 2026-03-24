@@ -761,6 +761,10 @@ go vet ./...                          # Static analysis
 ./build.sh web                        # Web-only, no GUI/CGO dependency
 ./build.sh debug                      # Debug build with symbols (for dlv/gdb)
 ./build.sh all                        # Cross-compile web-only for all platforms into dist/
+./build.sh race                       # Web-only with race detector
+./build.sh race-gui                   # GUI+web with race detector
+./build.sh test                       # Run go vet + go test
+./build.sh test-race                  # Run go vet + go test with race detector
 
 # Single-target cross-compilation
 ./build.sh web windows/amd64          # Windows
