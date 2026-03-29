@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"gopher-rdp/sloghex"
+	"github.com/bouncyball-git/gopher-rdp/util"
 )
 
 // PDU message types (MS-RDPECLIP 2.2.1).
@@ -305,7 +305,7 @@ func (h *Handler) ProcessPDU(data []byte) {
 		}
 		h.log.LogAttrs(context.Background(), slog.LevelDebug, "unlock clipboard data", slog.Int("clipDataId", int(clipDataId)))
 	default:
-		h.log.LogAttrs(context.Background(), slog.LevelWarn, "unknown PDU type", sloghex.Hex4("type", msgType))
+		h.log.LogAttrs(context.Background(), slog.LevelWarn, "unknown PDU type", util.Hex4("type", msgType))
 	}
 }
 
@@ -316,11 +316,11 @@ func (h *Handler) handleCaps(payload []byte) {
 		return
 	}
 	h.serverCaps = flags
-	h.log.LogAttrs(context.Background(), slog.LevelDebug, "server caps", slog.Int("version", int(version)), sloghex.Hex8("flags", flags))
+	h.log.LogAttrs(context.Background(), slog.LevelDebug, "server caps", slog.Int("version", int(version)), util.Hex8("flags", flags))
 }
 
 func (h *Handler) handleMonitorReady() {
-	h.log.LogAttrs(context.Background(), slog.LevelInfo, "monitor ready", sloghex.Hex8("serverCaps", h.serverCaps))
+	h.log.LogAttrs(context.Background(), slog.LevelInfo, "monitor ready", util.Hex8("serverCaps", h.serverCaps))
 	h.ready = true
 
 	// Negotiate long format names if server supports it (MS-RDPECLIP 2.2.2.2).
@@ -333,7 +333,7 @@ func (h *Handler) handleMonitorReady() {
 	// Send CB_CLIP_CAPS with our supported flags.
 	clientFlags := CBUseLongFormatNames
 	capsPDU := encodeCapsPDU(CBCapsVersion2, clientFlags)
-	h.log.LogAttrs(context.Background(), slog.LevelDebug, "sending client caps", slog.Int("version", 2), sloghex.Hex8("flags", clientFlags))
+	h.log.LogAttrs(context.Background(), slog.LevelDebug, "sending client caps", slog.Int("version", 2), util.Hex8("flags", clientFlags))
 	if err := h.sendFn(capsPDU); err != nil {
 		h.log.LogAttrs(context.Background(), slog.LevelError, "failed to send caps", slog.Any("error", err))
 	}

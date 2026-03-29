@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
-	rdp "gopher-rdp"
-	"gopher-rdp/display"
-	"gopher-rdp/protocol/disp"
-	"gopher-rdp/protocol/rdpsnd"
+	rdp "github.com/bouncyball-git/gopher-rdp"
+	"github.com/bouncyball-git/gopher-rdp/display"
+	"github.com/bouncyball-git/gopher-rdp/protocol/disp"
+	"github.com/bouncyball-git/gopher-rdp/protocol/rdpsnd"
 )
 
 // MonitorInfo describes a monitor for the broker.

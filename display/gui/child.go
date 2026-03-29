@@ -16,8 +16,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	rdp "gopher-rdp"
-	"gopher-rdp/protocol/rdpsnd"
+	rdp "github.com/bouncyball-git/gopher-rdp"
+	"github.com/bouncyball-git/gopher-rdp/protocol/rdpsnd"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/audio"

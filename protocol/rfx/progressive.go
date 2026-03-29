@@ -8,7 +8,7 @@ import (
 	"runtime"
 	"sync"
 
-	"gopher-rdp/sloghex"
+	"github.com/bouncyball-git/gopher-rdp/util"
 )
 
 // tilePixelPool pools 64x64 RGBA pixel buffers (16384 bytes each) for decoded tiles.
@@ -409,7 +409,7 @@ func (d *Decoder) decodeRegion(data []byte, contextID uint32) (Region, error) {
 			})
 		default:
 			d.log.LogAttrs(context.Background(), slog.LevelWarn, "unknown tile type",
-				sloghex.Hex4("type", pt.tileType))
+				util.Hex4("type", pt.tileType))
 		}
 	}
 

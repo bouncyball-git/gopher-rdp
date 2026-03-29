@@ -7,11 +7,11 @@ import (
 	"sync"
 	"time"
 
-	rdp "gopher-rdp"
-	"gopher-rdp/display"
-	"gopher-rdp/protocol/audin"
-	"gopher-rdp/protocol/disp"
-	"gopher-rdp/protocol/rdpsnd"
+	rdp "github.com/bouncyball-git/gopher-rdp"
+	"github.com/bouncyball-git/gopher-rdp/display"
+	"github.com/bouncyball-git/gopher-rdp/protocol/audin"
+	"github.com/bouncyball-git/gopher-rdp/protocol/disp"
+	"github.com/bouncyball-git/gopher-rdp/protocol/rdpsnd"
 )
 
 // MonitorRect describes a monitor's position and size in the virtual desktop.

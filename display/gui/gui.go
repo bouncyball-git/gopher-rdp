@@ -14,10 +14,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	rdp "gopher-rdp"
-	"gopher-rdp/display"
-	"gopher-rdp/protocol/pdu"
-	"gopher-rdp/protocol/rdpsnd"
+	rdp "github.com/bouncyball-git/gopher-rdp"
+	"github.com/bouncyball-git/gopher-rdp/display"
+	"github.com/bouncyball-git/gopher-rdp/protocol/pdu"
+	"github.com/bouncyball-git/gopher-rdp/util"
+	"github.com/bouncyball-git/gopher-rdp/protocol/rdpsnd"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/audio"
@@ -802,7 +803,7 @@ func (g *game) dumpScreen() {
 	pix := make([]byte, w*h*4)
 	g.screen.ReadPixels(pix)
 	fname := "screen_" + strconv.Itoa(w) + "x" + strconv.Itoa(h) + ".ppm"
-	if err := display.WritePPM(fname, pix, w, h); err != nil {
+	if err := util.WritePPM(fname, pix, w, h); err != nil {
 		g.log.LogAttrs(context.Background(), slog.LevelError, "screen dump failed", slog.Any("error", err))
 		return
 	}

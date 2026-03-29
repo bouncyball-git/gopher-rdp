@@ -1,7 +1,7 @@
 package main
 
 import (
-	rdp "gopher-rdp"
+	rdp "github.com/bouncyball-git/gopher-rdp"
 	"os"
 	"path/filepath"
 	"reflect"

@@ -2,7 +2,7 @@
 
 package gui
 
-import "gopher-rdp/display"
+import "github.com/bouncyball-git/gopher-rdp/display"
 
 func readClipboardImpl() (string, error) {
 	return display.ReadClipboard()

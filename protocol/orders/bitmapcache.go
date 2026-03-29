@@ -2,7 +2,7 @@ package orders
 
 import (
 	"encoding/binary"
-	"gopher-rdp/protocol/rle"
+	"github.com/bouncyball-git/gopher-rdp/protocol/rle"
 )
 
 // CachedBitmap stores a single bitmap cache entry, normalized to 32bpp BGRX.

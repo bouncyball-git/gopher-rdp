@@ -1,7 +1,7 @@
 // Package sloghex provides zero-allocation slog attributes for hex-formatted
 // integers. The formatting is lazy: fmt.Sprintf only runs when the log record
 // is actually written by the handler, so disabled log levels incur no cost.
-package sloghex
+package util
 
 import (
 	"encoding/hex"

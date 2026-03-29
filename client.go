@@ -38,34 +38,32 @@ import (
 	"sync/atomic"
 	"time"
 
-	"gopher-rdp/display"
-	"gopher-rdp/sloghex"
-	"gopher-rdp/protocol/nla"
-
-	"gopher-rdp/protocol/audin"
-	"gopher-rdp/protocol/rdpecam"
-	"gopher-rdp/protocol/ber"
-	"gopher-rdp/protocol/caps"
-	"gopher-rdp/protocol/clearcodec"
-	"gopher-rdp/protocol/cliprdr"
-	"gopher-rdp/protocol/disp"
-	"gopher-rdp/protocol/dvc"
-	"gopher-rdp/protocol/egfx"
-	"gopher-rdp/protocol/mppc"
-	"gopher-rdp/protocol/rdpdr"
-	"gopher-rdp/protocol/rdpsnd"
-	"gopher-rdp/protocol/urbdrc"
-	"gopher-rdp/protocol/fastpath"
-	"gopher-rdp/protocol/lic"
-	"gopher-rdp/protocol/mcs"
-	"gopher-rdp/protocol/nscodec"
-	"gopher-rdp/protocol/orders"
-	"gopher-rdp/protocol/pdu"
-	"gopher-rdp/protocol/pointer"
-	"gopher-rdp/protocol/rle"
-	"gopher-rdp/protocol/sec"
-	"gopher-rdp/protocol/tpkt"
-	"gopher-rdp/protocol/x224"
+	"github.com/bouncyball-git/gopher-rdp/util"
+	"github.com/bouncyball-git/gopher-rdp/protocol/nla"
+	"github.com/bouncyball-git/gopher-rdp/protocol/audin"
+	"github.com/bouncyball-git/gopher-rdp/protocol/rdpecam"
+	"github.com/bouncyball-git/gopher-rdp/protocol/ber"
+	"github.com/bouncyball-git/gopher-rdp/protocol/caps"
+	"github.com/bouncyball-git/gopher-rdp/protocol/clearcodec"
+	"github.com/bouncyball-git/gopher-rdp/protocol/cliprdr"
+	"github.com/bouncyball-git/gopher-rdp/protocol/disp"
+	"github.com/bouncyball-git/gopher-rdp/protocol/dvc"
+	"github.com/bouncyball-git/gopher-rdp/protocol/egfx"
+	"github.com/bouncyball-git/gopher-rdp/protocol/mppc"
+	"github.com/bouncyball-git/gopher-rdp/protocol/rdpdr"
+	"github.com/bouncyball-git/gopher-rdp/protocol/rdpsnd"
+	"github.com/bouncyball-git/gopher-rdp/protocol/urbdrc"
+	"github.com/bouncyball-git/gopher-rdp/protocol/fastpath"
+	"github.com/bouncyball-git/gopher-rdp/protocol/lic"
+	"github.com/bouncyball-git/gopher-rdp/protocol/mcs"
+	"github.com/bouncyball-git/gopher-rdp/protocol/nscodec"
+	"github.com/bouncyball-git/gopher-rdp/protocol/orders"
+	"github.com/bouncyball-git/gopher-rdp/protocol/pdu"
+	"github.com/bouncyball-git/gopher-rdp/protocol/pointer"
+	"github.com/bouncyball-git/gopher-rdp/protocol/rle"
+	"github.com/bouncyball-git/gopher-rdp/protocol/sec"
+	"github.com/bouncyball-git/gopher-rdp/protocol/tpkt"
+	"github.com/bouncyball-git/gopher-rdp/protocol/x224"
 )
 
 // ConnectionState represents the current state of the RDP connection
@@ -633,7 +631,7 @@ func (c *Client) upgradeTLS() error {
 	c.tpktConn.SetTCPConn(tlsConn)
 
 	state := tlsConn.ConnectionState()
-	c.log.LogAttrs(context.Background(), slog.LevelInfo, "TLS handshake complete", sloghex.Hex4("version", uint16(state.Version)), sloghex.Hex4("cipher", uint16(state.CipherSuite)))
+	c.log.LogAttrs(context.Background(), slog.LevelInfo, "TLS handshake complete", util.Hex4("version", uint16(state.Version)), util.Hex4("cipher", uint16(state.CipherSuite)))
 	return nil
 }
 
@@ -895,7 +893,7 @@ func (c *Client) mcsConnect() error {
 		if i < len(c.channelNames) {
 			c.channelMap[id] = c.channelNames[i]
 			c.channelOpts[id] = channelDefOpts[i]
-			c.logMcs.LogAttrs(context.Background(), slog.LevelDebug, "channel mapped", slog.String("name", c.channelNames[i]), slog.Int("id", int(id)), sloghex.Hex8("opts", uint32(channelDefOpts[i])))
+			c.logMcs.LogAttrs(context.Background(), slog.LevelDebug, "channel mapped", slog.String("name", c.channelNames[i]), slog.Int("id", int(id)), util.Hex8("opts", uint32(channelDefOpts[i])))
 		}
 	}
 
@@ -1176,7 +1174,7 @@ func (c *Client) mcsConnect() error {
 			c.log.LogAttrs(context.Background(), slog.LevelWarn, "drdynvc empty PDU")
 			return
 		}
-		c.log.LogAttrs(context.Background(), slog.LevelDebug, "drdynvc static channel data", slog.Int("len", len(data)), sloghex.Hex2("hdr", data[0]), sloghex.Hex2("cmd", (data[0]>>4)&0x0F))
+		c.log.LogAttrs(context.Background(), slog.LevelDebug, "drdynvc static channel data", slog.Int("len", len(data)), util.Hex2("hdr", data[0]), util.Hex2("cmd", (data[0]>>4)&0x0F))
 		c.dvc.ProcessPDU(data)
 	})
 
@@ -1868,7 +1866,7 @@ func (c *Client) handleLicensing() error {
 	switch preamble.MsgType {
 	case lic.NewLicense, lic.UpgradeLicense:
 		c.logLic.LogAttrs(context.Background(), slog.LevelDebug, "licensing complete",
-			sloghex.Hex2("msgType", preamble.MsgType))
+			util.Hex2("msgType", preamble.MsgType))
 		return nil
 	case lic.ErrorAlert:
 		ea, err := lic.DecodeErrorAlert(body)
@@ -1921,7 +1919,7 @@ func (c *Client) handleCapabilitiesExchange() error {
 	}
 
 	c.shareID.Store(da.ShareID)
-	c.logPdu.LogAttrs(context.Background(), slog.LevelDebug, "Demand Active", sloghex.Hex8("shareID", da.ShareID), slog.Int("serverCaps", int(da.NumberCapabilities)))
+	c.logPdu.LogAttrs(context.Background(), slog.LevelDebug, "Demand Active", util.Hex8("shareID", da.ShareID), slog.Int("serverCaps", int(da.NumberCapabilities)))
 
 	// Parse server capabilities and build a bitfield for conditional cap echo.
 	c.serverCaps = 0
@@ -1930,7 +1928,7 @@ func (c *Client) handleCapabilitiesExchange() error {
 			if sc.Type < 32 {
 				c.serverCaps |= 1 << sc.Type
 			}
-			c.logPdu.LogAttrs(context.Background(), slog.LevelDebug, "server capability", sloghex.Hex4("type", sc.Type), slog.Int("payloadLen", len(sc.Payload)))
+			c.logPdu.LogAttrs(context.Background(), slog.LevelDebug, "server capability", util.Hex4("type", sc.Type), slog.Int("payloadLen", len(sc.Payload)))
 			switch sc.Type {
 			case caps.TypeBitmap:
 				// MS-RDPBCGR 2.2.7.1.2: preferredBitsPerPixel at offset 0
@@ -1944,7 +1942,7 @@ func (c *Client) handleCapabilitiesExchange() error {
 			case caps.TypeSurfaceCommands:
 				if len(sc.Payload) >= 4 {
 					flags := binary.LittleEndian.Uint32(sc.Payload[0:4])
-					c.logPdu.LogAttrs(context.Background(), slog.LevelDebug, "surface command flags", sloghex.Hex8("cmdFlags", flags))
+					c.logPdu.LogAttrs(context.Background(), slog.LevelDebug, "surface command flags", util.Hex8("cmdFlags", flags))
 				}
 			case caps.TypeBitmapCodecs:
 				if len(sc.Payload) >= 1 {
@@ -1955,7 +1953,7 @@ func (c *Client) handleCapabilitiesExchange() error {
 						guid := sc.Payload[p : p+16]
 						codecID := sc.Payload[p+16]
 						propLen := int(binary.LittleEndian.Uint16(sc.Payload[p+17 : p+19]))
-						c.logPdu.LogAttrs(context.Background(), slog.LevelDebug, "bitmap codec", slog.Int("index", int(i)), sloghex.Bytes("guid", guid), slog.Int("codecID", int(codecID)), slog.Int("propLen", propLen))
+						c.logPdu.LogAttrs(context.Background(), slog.LevelDebug, "bitmap codec", slog.Int("index", int(i)), util.Bytes("guid", guid), slog.Int("codecID", int(codecID)), slog.Int("propLen", propLen))
 						p += 19 + propLen
 					}
 				}
@@ -2191,7 +2189,7 @@ func (c *Client) handleFinalization() error {
 			if errCode != 0 {
 				return fmt.Errorf("%w: server error info: 0x%08X (%s)", ErrFinalizationFailed, errCode, pdu.ErrorInfoName(errCode))
 			}
-			c.logPdu.LogAttrs(context.Background(), slog.LevelDebug, "received Set Error Info", sloghex.Hex8("code", errCode))
+			c.logPdu.LogAttrs(context.Background(), slog.LevelDebug, "received Set Error Info", util.Hex8("code", errCode))
 		default:
 			c.logPdu.LogAttrs(context.Background(), slog.LevelDebug, "finalization phase2: ignoring pduType2", slog.Int("pduType2", int(sdHdr.PDUType2)))
 		}
@@ -2310,7 +2308,7 @@ func (c *Client) receiveLoop() {
 				}
 				c.handleSlowPathPDU(userData)
 			default:
-				c.logMcs.LogAttrs(context.Background(), slog.LevelWarn, "receiveLoop: unhandled MCS PDU type", sloghex.Hex2("type", uint8(mcs.PDUType(mcsPayload))))
+				c.logMcs.LogAttrs(context.Background(), slog.LevelWarn, "receiveLoop: unhandled MCS PDU type", util.Hex2("type", uint8(mcs.PDUType(mcsPayload))))
 			}
 
 		case tpkt.PacketFastPath:
@@ -2628,7 +2626,7 @@ func (c *Client) handleSlowPathPDU(data []byte) {
 	if sdHdr.CompressedType&mppc.FlagCompressed != 0 {
 		compType := sdHdr.CompressedType & 0x0F
 		if compType > mppc.TypeRDP5 {
-			c.logPdu.LogAttrs(context.Background(), slog.LevelWarn, "slow-path: unsupported compression type", sloghex.Hex2("ctype", sdHdr.CompressedType))
+			c.logPdu.LogAttrs(context.Background(), slog.LevelWarn, "slow-path: unsupported compression type", util.Hex2("ctype", sdHdr.CompressedType))
 		} else {
 			decompressed, derr := c.mppcDecomp.Decompress(payload, sdHdr.CompressedType)
 			if derr != nil {
@@ -2654,7 +2652,7 @@ func (c *Client) handleSlowPathPDU(data []byte) {
 		if len(payload) >= 4 {
 			code := binary.LittleEndian.Uint32(payload[0:4])
 			if code != 0 {
-				c.logPdu.LogAttrs(context.Background(), slog.LevelWarn, "server Set Error Info", sloghex.Hex8("code", code), slog.String("name", pdu.ErrorInfoName(code)))
+				c.logPdu.LogAttrs(context.Background(), slog.LevelWarn, "server Set Error Info", util.Hex8("code", code), slog.String("name", pdu.ErrorInfoName(code)))
 			}
 		}
 	default:
@@ -2669,7 +2667,7 @@ func (c *Client) handleSaveSessionInfo(data []byte) {
 		return
 	}
 	infoType := binary.LittleEndian.Uint32(data[0:4])
-	c.logPdu.LogAttrs(context.Background(), slog.LevelDebug, "Save Session Info", sloghex.Hex8("infoType", infoType))
+	c.logPdu.LogAttrs(context.Background(), slog.LevelDebug, "Save Session Info", util.Hex8("infoType", infoType))
 
 	const infoTypeLogonExtended uint32 = 3
 	if infoType != infoTypeLogonExtended {
@@ -2874,7 +2872,7 @@ func (c *Client) handleFastPathPDU(actionByte byte, data []byte) {
 		if u.CompressionFlags&mppc.FlagCompressed != 0 {
 			compType := u.CompressionFlags & 0x0F
 			if compType > mppc.TypeRDP5 {
-				c.logFp.LogAttrs(context.Background(), slog.LevelWarn, "fast-path: unsupported compression type", sloghex.Hex2("ctype", u.CompressionFlags))
+				c.logFp.LogAttrs(context.Background(), slog.LevelWarn, "fast-path: unsupported compression type", util.Hex2("ctype", u.CompressionFlags))
 				continue
 			}
 			decompressed, derr := c.mppcDecomp.Decompress(u.Data, u.CompressionFlags)
@@ -2920,7 +2918,7 @@ func (c *Client) handleFastPathPDU(actionByte byte, data []byte) {
 // dispatchFastPathUpdate routes a complete (or reassembled) fast-path update
 // to the appropriate handler by update code.
 func (c *Client) dispatchFastPathUpdate(code byte, data []byte) {
-	c.logFp.LogAttrs(context.Background(), slog.LevelDebug, "fast-path update", sloghex.Hex2("code", code), slog.Int("len", len(data)))
+	c.logFp.LogAttrs(context.Background(), slog.LevelDebug, "fast-path update", util.Hex2("code", code), slog.Int("len", len(data)))
 	switch code {
 	case fastpath.UpdateBitmap:
 		c.handleFastPathBitmap(data)
@@ -2965,7 +2963,7 @@ func (c *Client) handleSurfaceCommands(data []byte) {
 	for off+2 <= len(data) {
 		cmdType := binary.LittleEndian.Uint16(data[off : off+2])
 		off += 2
-		c.logFp.LogAttrs(context.Background(), slog.LevelDebug, "surface cmd", sloghex.Hex4("type", cmdType))
+		c.logFp.LogAttrs(context.Background(), slog.LevelDebug, "surface cmd", util.Hex4("type", cmdType))
 		switch cmdType {
 		case 0x0004: // CMDTYPE_FRAME_MARKER
 			if off+6 > len(data) {
@@ -3006,7 +3004,7 @@ func (c *Client) handleSurfaceCommands(data []byte) {
 			}
 			payload := data[payloadStart : payloadStart+bitmapDataLength]
 
-			c.logFp.LogAttrs(context.Background(), slog.LevelDebug, "surface bits", sloghex.Hex2("codecID", codecID), slog.Int("width", width), slog.Int("height", height), slog.Int("x", destLeft), slog.Int("y", destTop), slog.Int("bytes", bitmapDataLength))
+			c.logFp.LogAttrs(context.Background(), slog.LevelDebug, "surface bits", util.Hex2("codecID", codecID), slog.Int("width", width), slog.Int("height", height), slog.Int("x", destLeft), slog.Int("y", destTop), slog.Int("bytes", bitmapDataLength))
 			c.handleSurfaceBits(destLeft, destTop, codecID, width, height, payload)
 
 			// Advance past the entire command: dest rect(8) + TS_BITMAP_DATA_EX header(12) + bitmapData
@@ -3021,7 +3019,7 @@ func (c *Client) handleSurfaceCommands(data []byte) {
 // handleSurfaceBits decodes a codec-compressed bitmap and writes it to the framebuffer.
 // Emits directly from decoded buffer to avoid the double-copy of emitDirtyRect.
 func (c *Client) handleSurfaceBits(destLeft, destTop int, codecID byte, width, height int, payload []byte) {
-	c.logFp.LogAttrs(context.Background(), slog.LevelDebug, "surface bits", sloghex.Hex2("codecID", codecID), slog.Int("width", width), slog.Int("height", height), slog.Int("x", destLeft), slog.Int("y", destTop), slog.Int("bytes", len(payload)))
+	c.logFp.LogAttrs(context.Background(), slog.LevelDebug, "surface bits", util.Hex2("codecID", codecID), slog.Int("width", width), slog.Int("height", height), slog.Int("x", destLeft), slog.Int("y", destTop), slog.Int("bytes", len(payload)))
 	var data []byte
 	switch codecID {
 	case 0x01: // NSCodec
@@ -3040,7 +3038,7 @@ func (c *Client) handleSurfaceBits(destLeft, destTop int, codecID byte, width, h
 	case 0x00: // Uncompressed
 		data = payload
 	default:
-		c.logFp.LogAttrs(context.Background(), slog.LevelWarn, "unsupported surface codec", sloghex.Hex2("codecID", codecID))
+		c.logFp.LogAttrs(context.Background(), slog.LevelWarn, "unsupported surface codec", util.Hex2("codecID", codecID))
 		return
 	}
 
@@ -4724,7 +4722,7 @@ func (c *Client) handleVirtualChannelData(channelID uint16, data []byte) {
 	// Middle or last chunk — append to reassembly buffer
 	buf, ok := c.vcReassembly[channelID]
 	if !ok {
-		c.log.LogAttrs(context.Background(), slog.LevelWarn, "VC chunk without FIRST, dropping", slog.String("channel", name), sloghex.Hex8("flags", flags))
+		c.log.LogAttrs(context.Background(), slog.LevelWarn, "VC chunk without FIRST, dropping", slog.String("channel", name), util.Hex8("flags", flags))
 		return
 	}
 	oldLen := len(buf)
@@ -5750,7 +5748,7 @@ func (c *Client) DumpFramebuffer() (string, error) {
 	c.framebufMu.RUnlock()
 
 	fname := "framebuf_" + strconv.Itoa(w) + "x" + strconv.Itoa(h) + ".ppm"
-	if err := display.WritePPM(fname, pix, w, h); err != nil {
+	if err := util.WritePPM(fname, pix, w, h); err != nil {
 		return "", err
 	}
 	c.log.LogAttrs(context.Background(), slog.LevelInfo, "framebuffer dumped", slog.String("file", fname))
@@ -5767,7 +5765,7 @@ func (c *Client) DumpEGFXSurfaces() []string {
 	var files []string
 	for id, surf := range surfaces {
 		fname := "surface_" + strconv.Itoa(int(id)) + "_" + strconv.Itoa(surf.Width) + "x" + strconv.Itoa(surf.Height) + ".ppm"
-		if err := display.WritePPM(fname, surf.Data, surf.Width, surf.Height); err != nil {
+		if err := util.WritePPM(fname, surf.Data, surf.Width, surf.Height); err != nil {
 			c.log.LogAttrs(context.Background(), slog.LevelError, "surface dump failed", slog.Int("surfaceId", int(id)), slog.Any("error", err))
 			continue
 		}

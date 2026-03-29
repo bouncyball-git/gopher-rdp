@@ -7,7 +7,7 @@ import (
 	"encoding/binary"
 	"log/slog"
 
-	"gopher-rdp/sloghex"
+	"github.com/bouncyball-git/gopher-rdp/util"
 )
 
 // Capability set type constants
@@ -570,7 +570,7 @@ func DecodeCapabilitySets(log *slog.Logger, data []byte, count uint16) ([]Capabi
 			Type:    capType,
 			Payload: data[off+4 : off+capLen], // sub-slice, no copy
 		})
-		log.LogAttrs(context.Background(), slog.LevelDebug, "capability set", sloghex.Hex4("type", capType), slog.Int("len", capLen))
+		log.LogAttrs(context.Background(), slog.LevelDebug, "capability set", util.Hex4("type", capType), slog.Int("len", capLen))
 		off += capLen
 	}
 	return sets, nil

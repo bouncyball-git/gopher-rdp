@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"gopher-rdp/protocol/fastpath"
+	"github.com/bouncyball-git/gopher-rdp/protocol/fastpath"
 )
 
 var discardLogger = slog.New(slog.DiscardHandler)

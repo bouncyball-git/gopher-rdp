@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"gopher-rdp/protocol/rdpsnd"
+	"github.com/bouncyball-git/gopher-rdp/protocol/rdpsnd"
 )
 
 func TestPCMStream_ReadSilenceWhenEmpty(t *testing.T) {

@@ -19,8 +19,8 @@ import (
 	"syscall"
 	"time"
 
-	rdp "gopher-rdp"
-	"gopher-rdp/display/web"
+	rdp "github.com/bouncyball-git/gopher-rdp"
+	"github.com/bouncyball-git/gopher-rdp/display/web"
 )
 
 const version = "0.9.22"

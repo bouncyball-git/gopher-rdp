@@ -14,7 +14,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log/slog"
-	"gopher-rdp/sloghex"
+	"github.com/bouncyball-git/gopher-rdp/util"
 )
 
 // PDU message types (MS-RDPSND 2.2).
@@ -184,7 +184,7 @@ func (h *Handler) ProcessPDU(data []byte) {
 	case SNDCQualityMode:
 		h.handleQualityMode(body)
 	default:
-		h.log.LogAttrs(context.Background(), slog.LevelWarn, "unknown PDU type", sloghex.Hex2("type", msgType), slog.Int("bodyLen", len(body)))
+		h.log.LogAttrs(context.Background(), slog.LevelWarn, "unknown PDU type", util.Hex2("type", msgType), slog.Int("bodyLen", len(body)))
 	}
 }
 
@@ -336,7 +336,7 @@ func (h *Handler) handleServerFormats(body []byte) {
 		}
 		h.log.LogAttrs(context.Background(), slog.LevelDebug, "server format",
 			slog.Int("i", i),
-			sloghex.Hex4("tag", f.Tag),
+			util.Hex4("tag", f.Tag),
 			slog.Int("ch", int(f.Channels)),
 			slog.Int("rate", int(f.SamplesPerSec)),
 			slog.Int("bits", int(f.BitsPerSample)),
@@ -524,7 +524,7 @@ func (h *Handler) deliverAudio(formatNo, waveTS uint16, audioTS uint32, audioDat
 	af := h.clientFormats[formatNo]
 	h.log.LogAttrs(context.Background(), slog.LevelDebug, "wave audio",
 		slog.Int("formatNo", int(formatNo)),
-		sloghex.Hex4("tag", af.Tag),
+		util.Hex4("tag", af.Tag),
 		slog.Int("ch", int(af.Channels)),
 		slog.Int("rate", int(af.SamplesPerSec)),
 		slog.Int("dataLen", len(audioData)))

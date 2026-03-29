@@ -6,7 +6,7 @@ import (
 	"encoding/binary"
 	"log/slog"
 
-	"gopher-rdp/sloghex"
+	"github.com/bouncyball-git/gopher-rdp/util"
 )
 
 // Share Control PDU types (low 4 bits of pduType field)
@@ -193,7 +193,7 @@ func DecodeShareControlHeader(log *slog.Logger, data []byte) (ShareControlHeader
 		PDUType:     binary.LittleEndian.Uint16(data[2:4]),
 		PDUSource:   binary.LittleEndian.Uint16(data[4:6]),
 	}
-	log.LogAttrs(context.Background(), slog.LevelDebug, "share control header", sloghex.Hex4("pduType", hdr.PDUType), slog.Int("totalLen", int(hdr.TotalLength)), slog.Int("pduSource", int(hdr.PDUSource)))
+	log.LogAttrs(context.Background(), slog.LevelDebug, "share control header", util.Hex4("pduType", hdr.PDUType), slog.Int("totalLen", int(hdr.TotalLength)), slog.Int("pduSource", int(hdr.PDUSource)))
 	return hdr, data[6:], nil
 }
 
@@ -248,7 +248,7 @@ func DecodeDemandActive(log *slog.Logger, data []byte) (*DemandActive, error) {
 		da.SessionID = binary.LittleEndian.Uint32(data[off : off+4])
 	}
 
-	log.LogAttrs(context.Background(), slog.LevelDebug, "demand active", sloghex.Hex8("shareID", da.ShareID), slog.Int("numCaps", int(da.NumberCapabilities)), slog.Int("capsLen", int(da.CombinedCapsLen)))
+	log.LogAttrs(context.Background(), slog.LevelDebug, "demand active", util.Hex8("shareID", da.ShareID), slog.Int("numCaps", int(da.NumberCapabilities)), slog.Int("capsLen", int(da.CombinedCapsLen)))
 	return da, nil
 }
 
@@ -343,7 +343,7 @@ func DecodeShareDataHeader(log *slog.Logger, data []byte) (ShareDataHeader, []by
 		CompressedType:     data[9],
 		CompressedLength:   binary.LittleEndian.Uint16(data[10:12]),
 	}
-	log.LogAttrs(context.Background(), slog.LevelDebug, "share data header", sloghex.Hex2("pduType2", hdr.PDUType2), sloghex.Hex8("shareID", hdr.ShareID))
+	log.LogAttrs(context.Background(), slog.LevelDebug, "share data header", util.Hex2("pduType2", hdr.PDUType2), util.Hex8("shareID", hdr.ShareID))
 	return hdr, data[12:], nil
 }
 

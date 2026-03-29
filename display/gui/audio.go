@@ -6,7 +6,7 @@ import (
 	"encoding/binary"
 	"sync"
 
-	"gopher-rdp/protocol/rdpsnd"
+	"github.com/bouncyball-git/gopher-rdp/protocol/rdpsnd"
 )
 
 const ringBufSize = 262144 // 256KB

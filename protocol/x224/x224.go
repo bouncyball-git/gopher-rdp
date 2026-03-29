@@ -18,7 +18,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"gopher-rdp/sloghex"
+	"github.com/bouncyball-git/gopher-rdp/util"
 )
 
 // TPDU type codes (X.224 section 13)
@@ -169,7 +169,7 @@ func DecodeConnectionConfirm(log *slog.Logger, data []byte) (*ConnectionConfirm,
 		}
 	}
 
-	log.LogAttrs(context.Background(), slog.LevelDebug, "X.224 Connection Confirm", sloghex.Hex2("type", cc.Type), sloghex.Hex2("flags", cc.Flags), sloghex.Hex8("selectedProto", cc.SelectedProto), sloghex.Hex8("failureCode", cc.FailureCode))
+	log.LogAttrs(context.Background(), slog.LevelDebug, "X.224 Connection Confirm", util.Hex2("type", cc.Type), util.Hex2("flags", cc.Flags), util.Hex8("selectedProto", cc.SelectedProto), util.Hex8("failureCode", cc.FailureCode))
 	return cc, nil
 }
 

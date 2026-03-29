@@ -10,11 +10,11 @@ import (
 	"sync"
 	"time"
 
-	rdp "gopher-rdp"
-	"gopher-rdp/display"
-	"gopher-rdp/protocol/audin"
-	"gopher-rdp/protocol/egfx"
-	"gopher-rdp/protocol/rdpsnd"
+	rdp "github.com/bouncyball-git/gopher-rdp"
+	"github.com/bouncyball-git/gopher-rdp/display"
+	"github.com/bouncyball-git/gopher-rdp/protocol/audin"
+	"github.com/bouncyball-git/gopher-rdp/protocol/egfx"
+	"github.com/bouncyball-git/gopher-rdp/protocol/rdpsnd"
 )
 
 //go:embed index.html

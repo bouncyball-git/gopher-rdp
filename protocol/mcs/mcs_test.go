@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"gopher-rdp/protocol/ber"
+	"github.com/bouncyball-git/gopher-rdp/protocol/ber"
 )
 
 func TestConnectInitialEncode(t *testing.T) {

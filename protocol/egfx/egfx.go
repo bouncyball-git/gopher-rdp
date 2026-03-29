@@ -11,10 +11,10 @@ import (
 	"fmt"
 	"log/slog"
 
-	"gopher-rdp/sloghex"
-	"gopher-rdp/protocol/rfx"
-	"gopher-rdp/protocol/rle"
-	"gopher-rdp/protocol/zgfx"
+	"github.com/bouncyball-git/gopher-rdp/util"
+	"github.com/bouncyball-git/gopher-rdp/protocol/rfx"
+	"github.com/bouncyball-git/gopher-rdp/protocol/rle"
+	"github.com/bouncyball-git/gopher-rdp/protocol/zgfx"
 )
 
 // levelTrace is a custom log level below Debug for very verbose diagnostics.
@@ -443,7 +443,7 @@ func egfxCmdName(cmdId uint16) string {
 }
 
 func (h *Handler) handleCommand(cmdId uint16, data []byte) {
-	h.log.LogAttrs(context.Background(), slog.LevelDebug, "command received", slog.String("cmd", egfxCmdName(cmdId)), sloghex.Hex4("cmdId", cmdId), slog.Int("len", len(data)))
+	h.log.LogAttrs(context.Background(), slog.LevelDebug, "command received", slog.String("cmd", egfxCmdName(cmdId)), util.Hex4("cmdId", cmdId), slog.Int("len", len(data)))
 	switch cmdId {
 	case CmdCreateSurface:
 		h.handleCreateSurface(data)
@@ -478,7 +478,7 @@ func (h *Handler) handleCommand(cmdId uint16, data []byte) {
 	case CmdDeleteEncodingCtx:
 		h.handleDeleteEncodingCtx(data)
 	default:
-		h.log.LogAttrs(context.Background(), slog.LevelWarn, "unhandled command", sloghex.Hex4("cmdId", cmdId), slog.Int("len", len(data)))
+		h.log.LogAttrs(context.Background(), slog.LevelWarn, "unhandled command", util.Hex4("cmdId", cmdId), slog.Int("len", len(data)))
 	}
 }
 
@@ -760,7 +760,7 @@ func (h *Handler) handleWireToSurface1(data []byte) {
 		return
 	}
 
-	h.log.LogAttrs(context.Background(), slog.LevelDebug, "WireToSurface1", slog.Int("surfaceId", int(surfId)), sloghex.Hex4("codecId", codecId),
+	h.log.LogAttrs(context.Background(), slog.LevelDebug, "WireToSurface1", slog.Int("surfaceId", int(surfId)), util.Hex4("codecId", codecId),
 		slog.Int("left", left), slog.Int("top", top), slog.Int("right", right), slog.Int("bottom", bottom), slog.Int("width", w), slog.Int("height", hh), slog.Int("bitmapLen", int(bitmapLen)))
 
 	var pixels []byte
@@ -879,7 +879,7 @@ func (h *Handler) handleWireToSurface1(data []byte) {
 		return
 
 	default:
-		h.log.LogAttrs(context.Background(), slog.LevelWarn, "unsupported codec", sloghex.Hex4("codecId", codecId))
+		h.log.LogAttrs(context.Background(), slog.LevelWarn, "unsupported codec", util.Hex4("codecId", codecId))
 		return
 	}
 
@@ -916,7 +916,7 @@ func (h *Handler) handleWireToSurface2(data []byte) {
 	bitmapLen := binary.LittleEndian.Uint32(data[9:13])
 
 	if codecId != CodecProgressive {
-		h.log.LogAttrs(context.Background(), slog.LevelWarn, "WireToSurface2 unsupported codec", sloghex.Hex4("codecId", codecId),
+		h.log.LogAttrs(context.Background(), slog.LevelWarn, "WireToSurface2 unsupported codec", util.Hex4("codecId", codecId),
 			slog.Int("surfaceId", int(surfId)), slog.Int("ctxId", int(ctxId)), slog.Int("bitmapLen", int(bitmapLen)))
 		return
 	}
@@ -1128,7 +1128,7 @@ func (h *Handler) handleCapsConfirm(data []byte) {
 	version := binary.LittleEndian.Uint32(data[0:4])
 	// capsDataLength := binary.LittleEndian.Uint32(data[4:8])
 	// capsData/flags := binary.LittleEndian.Uint32(data[8:12])
-	h.log.LogAttrs(context.Background(), slog.LevelInfo, "caps confirmed", sloghex.Hex8("version", version))
+	h.log.LogAttrs(context.Background(), slog.LevelInfo, "caps confirmed", util.Hex8("version", version))
 }
 
 func (h *Handler) handleSolidFill(data []byte) {

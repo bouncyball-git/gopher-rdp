@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"gopher-rdp/sloghex"
+	"github.com/bouncyball-git/gopher-rdp/util"
 )
 
 // Licensing message types
@@ -64,7 +64,7 @@ func DecodePreamble(log *slog.Logger, data []byte) (Preamble, []byte, error) {
 		Flags:   data[1],
 		MsgSize: binary.LittleEndian.Uint16(data[2:4]),
 	}
-	log.LogAttrs(context.Background(), slog.LevelDebug, "license preamble", sloghex.Hex2("msgType", p.MsgType), sloghex.Hex2("flags", p.Flags), slog.Int("msgSize", int(p.MsgSize)))
+	log.LogAttrs(context.Background(), slog.LevelDebug, "license preamble", util.Hex2("msgType", p.MsgType), util.Hex2("flags", p.Flags), slog.Int("msgSize", int(p.MsgSize)))
 	return p, data[4:], nil
 }
 

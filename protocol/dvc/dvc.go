@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"gopher-rdp/sloghex"
+	"github.com/bouncyball-git/gopher-rdp/util"
 )
 
 // DRDYNVC command constants (bits 7-4 of the header byte).
@@ -108,7 +108,7 @@ func (h *Handler) ProcessPDU(data []byte) {
 	case CmdClose:
 		h.handleClose(data, cbId)
 	default:
-		h.log.LogAttrs(context.Background(), slog.LevelWarn, "unknown command", sloghex.Hex2("cmd", cmd))
+		h.log.LogAttrs(context.Background(), slog.LevelWarn, "unknown command", util.Hex2("cmd", cmd))
 	}
 }
 

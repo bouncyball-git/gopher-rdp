@@ -14,7 +14,7 @@ import (
 	"log/slog"
 	"math"
 
-	"gopher-rdp/sloghex"
+	"github.com/bouncyball-git/gopher-rdp/util"
 )
 
 // Dynamic channel name for display control.
@@ -130,7 +130,7 @@ func (h *Handler) ProcessPDU(data []byte) {
 			h.onReady = nil // fire once
 		}
 	default:
-		h.log.LogAttrs(context.Background(), slog.LevelWarn, "unknown PDU type", sloghex.Hex8("type", pduType))
+		h.log.LogAttrs(context.Background(), slog.LevelWarn, "unknown PDU type", util.Hex8("type", pduType))
 	}
 }
 

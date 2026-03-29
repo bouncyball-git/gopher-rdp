@@ -12,7 +12,7 @@ import (
 	"log/slog"
 	"unicode/utf16"
 
-	"gopher-rdp/sloghex"
+	"github.com/bouncyball-git/gopher-rdp/util"
 )
 
 // GCC data block types — client to server
@@ -430,10 +430,10 @@ func DecodeServerData(log *slog.Logger, data []byte) (*ServerCoreData, *ServerSe
 	}
 
 	if core != nil {
-		log.LogAttrs(context.Background(), slog.LevelDebug, "GCC server core", sloghex.Hex8("version", core.Version), sloghex.Hex8("earlyCapFlags", core.EarlyCapabilityFlags))
+		log.LogAttrs(context.Background(), slog.LevelDebug, "GCC server core", util.Hex8("version", core.Version), util.Hex8("earlyCapFlags", core.EarlyCapabilityFlags))
 	}
 	if sec != nil {
-		log.LogAttrs(context.Background(), slog.LevelDebug, "GCC server security", sloghex.Hex8("encMethod", sec.EncryptionMethod), sloghex.Hex8("encLevel", sec.EncryptionLevel))
+		log.LogAttrs(context.Background(), slog.LevelDebug, "GCC server security", util.Hex8("encMethod", sec.EncryptionMethod), util.Hex8("encLevel", sec.EncryptionLevel))
 	}
 	if net != nil {
 		log.LogAttrs(context.Background(), slog.LevelDebug, "GCC server network", slog.Int("ioChannel", int(net.IOChannelID)), slog.Int("channels", len(net.ChannelIDs)))

@@ -5,7 +5,7 @@ package main
 import (
 	"fmt"
 
-	rdp "gopher-rdp"
+	rdp "github.com/bouncyball-git/gopher-rdp"
 )
 
 const guiAvailable = false

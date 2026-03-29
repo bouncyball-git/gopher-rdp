@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"os"
 
-	rdp "gopher-rdp"
-	"gopher-rdp/display/gui"
+	rdp "github.com/bouncyball-git/gopher-rdp"
+	"github.com/bouncyball-git/gopher-rdp/display/gui"
 )
 
 const guiAvailable = true

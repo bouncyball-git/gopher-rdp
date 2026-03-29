@@ -8,7 +8,7 @@ import (
 	"io"
 	"log/slog"
 
-	"gopher-rdp/protocol/ber"
+	"github.com/bouncyball-git/gopher-rdp/protocol/ber"
 )
 
 // compile-time check: ensure bytes.Buffer satisfies io.ByteWriter for BER perf

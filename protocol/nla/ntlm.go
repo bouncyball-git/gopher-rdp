@@ -12,7 +12,7 @@ import (
 	"context"
 	"log/slog"
 
-	"gopher-rdp/sloghex"
+	"github.com/bouncyball-git/gopher-rdp/util"
 )
 
 // NTLM message type constants
@@ -96,7 +96,7 @@ func (n *ntlmClient) negotiate() []byte {
 
 	n.negotiateMsg = make([]byte, len(msg))
 	copy(n.negotiateMsg, msg)
-	n.log.LogAttrs(context.Background(), slog.LevelDebug, "NTLM negotiate built", sloghex.Hex8("flags", flags), slog.Int("len", len(msg)))
+	n.log.LogAttrs(context.Background(), slog.LevelDebug, "NTLM negotiate built", util.Hex8("flags", flags), slog.Int("len", len(msg)))
 	return msg
 }
 
@@ -128,7 +128,7 @@ func (n *ntlmClient) authenticate(challengeMsg []byte) ([]byte, error) {
 			targetInfo = challengeMsg[tiOff : tiOff+uint32(tiLen)]
 		}
 	}
-	n.log.LogAttrs(context.Background(), slog.LevelDebug, "NTLM challenge parsed", sloghex.Hex8("serverFlags", serverFlags), slog.Int("targetInfoLen", len(targetInfo)))
+	n.log.LogAttrs(context.Background(), slog.LevelDebug, "NTLM challenge parsed", util.Hex8("serverFlags", serverFlags), slog.Int("targetInfoLen", len(targetInfo)))
 
 	// Log AV_PAIRs from server challenge (trace level)
 	for off := 0; off+4 <= len(targetInfo); {
@@ -137,7 +137,7 @@ func (n *ntlmClient) authenticate(challengeMsg []byte) ([]byte, error) {
 		if off+4+int(avLen) > len(targetInfo) {
 			break
 		}
-		n.log.LogAttrs(context.Background(), slog.LevelDebug, "challenge AV_PAIR", sloghex.Hex4("avID", avID), slog.Int("avLen", int(avLen)))
+		n.log.LogAttrs(context.Background(), slog.LevelDebug, "challenge AV_PAIR", util.Hex4("avID", avID), slog.Int("avLen", int(avLen)))
 		if avID == avEOL {
 			break
 		}
@@ -155,7 +155,7 @@ func (n *ntlmClient) authenticate(challengeMsg []byte) ([]byte, error) {
 
 	// Get timestamp from TargetInfo, or use current time
 	timestamp := getAVTimestamp(targetInfo)
-	n.log.LogAttrs(context.Background(), slog.LevelDebug, "NTLMv2 blob params", sloghex.Bytes("timestamp", timestamp[:]), slog.String("user", n.username), slog.String("domain", n.domain))
+	n.log.LogAttrs(context.Background(), slog.LevelDebug, "NTLMv2 blob params", util.Bytes("timestamp", timestamp[:]), slog.String("user", n.username), slog.String("domain", n.domain))
 
 	// Full TargetInfo modification: MsvAvFlags=0x02 + CB + SPN
 	modifiedTI := modifyTargetInfo(targetInfo, n.channelBindingsHash, n.targetSPN)
@@ -297,7 +297,7 @@ func (n *ntlmClient) authenticate(challengeMsg []byte) ([]byte, error) {
 	copy(msg[72:88], micValue)
 
 	n.log.LogAttrs(context.Background(), slog.LevelDebug, "NTLM authenticate built",
-		sloghex.Hex8("negotiateFlags", negotiateFlags), slog.Int("len", len(msg)))
+		util.Hex8("negotiateFlags", negotiateFlags), slog.Int("len", len(msg)))
 	n.authenticateMsg = make([]byte, len(msg))
 	copy(n.authenticateMsg, msg)
 

@@ -23,7 +23,7 @@ import (
 	"log/slog"
 	"net"
 
-	"gopher-rdp/sloghex"
+	"github.com/bouncyball-git/gopher-rdp/util"
 )
 
 const (
@@ -160,7 +160,7 @@ func (c *Conn) ReadPacket() (PacketType, byte, []byte, error) {
 	if _, err := io.ReadFull(c.conn, payload); err != nil {
 		return 0, 0, nil, fmt.Errorf("failed to read fast-path payload: %w", err)
 	}
-	c.log.LogAttrs(context.Background(), slog.LevelDebug, "fast-path packet", sloghex.Hex2("action", actionByte), slog.Int("len", remaining))
+	c.log.LogAttrs(context.Background(), slog.LevelDebug, "fast-path packet", util.Hex2("action", actionByte), slog.Int("len", remaining))
 	return PacketFastPath, actionByte, payload, nil
 }
 

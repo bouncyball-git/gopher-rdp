@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"gopher-rdp/protocol/nscodec"
+	"github.com/bouncyball-git/gopher-rdp/protocol/nscodec"
 )
 
 const levelTrace = slog.LevelDebug - 4

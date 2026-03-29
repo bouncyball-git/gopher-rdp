@@ -1,4 +1,4 @@
-module gopher-rdp
+module github.com/bouncyball-git/gopher-rdp
 
 go 1.25.6
 

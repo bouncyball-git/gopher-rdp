@@ -13,7 +13,7 @@ import (
 	"io"
 	"log/slog"
 
-	"gopher-rdp/sloghex"
+	"github.com/bouncyball-git/gopher-rdp/util"
 )
 
 // ErrCredentialsFatal is returned when the server rejects credentials with an
@@ -85,7 +85,7 @@ func Authenticate(tlsConn *tls.Conn, log *slog.Logger, hostname, domain, usernam
 	cert := tlsConn.ConnectionState().PeerCertificates[0]
 	cbHash := computeChannelBindingsHash(cert.Raw)
 	log.LogAttrs(ctx, slog.LevelDebug, "TLS channel bindings computed",
-		sloghex.Bytes("cbHash", cbHash[:]),
+		util.Bytes("cbHash", cbHash[:]),
 		slog.String("certSigAlgo", cert.SignatureAlgorithm.String()))
 
 	// SPN built inside ntlmClient.targetSPN
@@ -111,8 +111,8 @@ func Authenticate(tlsConn *tls.Conn, log *slog.Logger, hostname, domain, usernam
 	log.LogAttrs(ctx, slog.LevelDebug, "sending NTLM Negotiate",
 		slog.Int("advertiseVersion", advertiseVersion), slog.Int("negoBytes", len(negotiateMsg)),
 		slog.Int("tsRequestBytes", len(req1Bytes)),
-		sloghex.Bytes("spnegoInit", spnegoInit),
-		sloghex.Bytes("tsRequest", req1Bytes))
+		util.Bytes("spnegoInit", spnegoInit),
+		util.Bytes("tsRequest", req1Bytes))
 	if err := sendTSRequest(tlsConn, req1); err != nil {
 		return fmt.Errorf("credssp: sending negotiate: %w", err)
 	}
@@ -122,7 +122,7 @@ func Authenticate(tlsConn *tls.Conn, log *slog.Logger, hostname, domain, usernam
 	if err != nil {
 		return fmt.Errorf("credssp: reading challenge: %w", err)
 	}
-	log.LogAttrs(ctx, slog.LevelDebug, "received server challenge", slog.Int("serverVersion", resp1.Version), slog.Int("negoTokens", len(resp1.NegoTokens)), slog.Int("pubKeyAuthLen", len(resp1.PubKeyAuth)), sloghex.Hex8("errorCode", uint32(resp1.ErrorCode)))
+	log.LogAttrs(ctx, slog.LevelDebug, "received server challenge", slog.Int("serverVersion", resp1.Version), slog.Int("negoTokens", len(resp1.NegoTokens)), slog.Int("pubKeyAuthLen", len(resp1.PubKeyAuth)), util.Hex8("errorCode", uint32(resp1.ErrorCode)))
 	if resp1.ErrorCode != 0 {
 		err := fmt.Errorf("credssp: server error 0x%08X %s", uint32(resp1.ErrorCode), ntstatusName(resp1.ErrorCode))
 		if isFatalNTSTATUS(resp1.ErrorCode) {
@@ -164,7 +164,7 @@ func Authenticate(tlsConn *tls.Conn, log *slog.Logger, hostname, domain, usernam
 	// Per RFC 4178 §5, this MUST be included when the NTLM Authenticate contains a MIC
 	// (indicated by MsvAvFlags=0x02 in the TargetInfo).
 	mechListMICSig := seal.makeSignature(mechTypeList)
-	log.LogAttrs(ctx, slog.LevelDebug, "mechListMIC computed", sloghex.Bytes("mic", mechListMICSig[:]), slog.Int("mechTypeListLen", len(mechTypeList)))
+	log.LogAttrs(ctx, slog.LevelDebug, "mechListMIC computed", util.Bytes("mic", mechListMICSig[:]), slog.Int("mechTypeListLen", len(mechTypeList)))
 
 	// Reset RC4 cipher state after mechListMIC, per MS-NLMP.
 	// Sequence numbers are NOT reset — pubKeyAuth will use seqNum=1.
@@ -199,7 +199,7 @@ func Authenticate(tlsConn *tls.Conn, log *slog.Logger, hostname, domain, usernam
 		hashInput := append([]byte("CredSSP Client-To-Server Binding Hash\x00"), clientNonce...)
 		hashInput = append(hashInput, subjectPubKey...)
 		hashValue := sha256.Sum256(hashInput)
-		log.LogAttrs(ctx, slog.LevelDebug, "pubKeyAuth hash input", slog.Int("hashInputLen", len(hashInput)), sloghex.Bytes("hashValue", hashValue[:]), sloghex.Bytes("pubKey", subjectPubKey))
+		log.LogAttrs(ctx, slog.LevelDebug, "pubKeyAuth hash input", slog.Int("hashInputLen", len(hashInput)), util.Bytes("hashValue", hashValue[:]), util.Bytes("pubKey", subjectPubKey))
 		pubKeyAuth = seal.seal(hashValue[:])
 		log.LogAttrs(ctx, slog.LevelDebug, "pubKeyAuth computed (v5+ SHA-256 binding)", slog.Int("sealedBytes", len(pubKeyAuth)))
 	} else {
@@ -229,7 +229,7 @@ func Authenticate(tlsConn *tls.Conn, log *slog.Logger, hostname, domain, usernam
 		log.LogAttrs(ctx, slog.LevelError, "failed reading server pubKeyAuth", slog.String("error", err.Error()))
 		return fmt.Errorf("credssp: reading server pubKeyAuth: %w", err)
 	}
-	log.LogAttrs(ctx, slog.LevelDebug, "received server pubKeyAuth response", slog.Int("pubKeyAuthBytes", len(resp2.PubKeyAuth)), sloghex.Hex8("errorCode", uint32(resp2.ErrorCode)))
+	log.LogAttrs(ctx, slog.LevelDebug, "received server pubKeyAuth response", slog.Int("pubKeyAuthBytes", len(resp2.PubKeyAuth)), util.Hex8("errorCode", uint32(resp2.ErrorCode)))
 	if resp2.ErrorCode != 0 {
 		err := fmt.Errorf("credssp: server error 0x%08X %s", uint32(resp2.ErrorCode), ntstatusName(resp2.ErrorCode))
 		if isFatalNTSTATUS(resp2.ErrorCode) {
