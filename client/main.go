@@ -23,8 +23,7 @@ import (
 	"github.com/bouncyball-git/gopher-rdp/display/web"
 )
 
-const version = "0.9.22"
-
+const version = "1.0.0"
 
 // optionalString implements flag.Value as a boolean-style flag that also
 // accepts an optional string value. Passing -log-file sets it to the default
