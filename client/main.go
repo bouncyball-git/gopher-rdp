@@ -847,6 +847,8 @@ func main() {
 		switch os.Args[i] {
 		case "-gui":
 			rewrite = strings.Contains(next, "x")
+		case "-web":
+			rewrite = true
 		case "-log":
 			rewrite = true
 		case "-log-file":

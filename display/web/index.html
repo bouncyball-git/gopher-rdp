@@ -507,10 +507,15 @@
   ws.binaryType = "arraybuffer";
 
   // H.264 decoder state
-  var h264Decoder = null;
+  // AVC420 (mode=0) and AVC444-luma (mode=1) use separate decoders
+  // to avoid corrupting H.264 reference frame state between streams.
+  // AVC444-chroma (mode=2) is skipped — luma alone gives 4:2:0 quality.
+  var h264Decoder = null;       // AVC420 (mode=0)
+  var h264LumaDecoder = null;   // AVC444 luma (mode=1)
   var h264Timestamp = 0;
   var h264RectMap = {};    // timestamp → {destLeft, destTop, regions[]}
-  var h264GotKeyframe = false; // gate: drop deltas until first keyframe
+  var h264GotKeyframe = false;
+  var h264LumaGotKeyframe = false;
 
   function h264OutputCallback(frame) {
     var ts = frame.timestamp;
@@ -560,13 +565,14 @@
   }
 
   function resetH264Decoder() {
-    if (h264Decoder && h264Decoder.state !== "closed") {
-      h264Decoder.close();
-    }
+    if (h264Decoder && h264Decoder.state !== "closed") h264Decoder.close();
+    if (h264LumaDecoder && h264LumaDecoder.state !== "closed") h264LumaDecoder.close();
     h264Decoder = null;
+    h264LumaDecoder = null;
     h264Timestamp = 0;
     h264RectMap = {};
     h264GotKeyframe = false;
+    h264LumaGotKeyframe = false;
   }
 
   // Scan H.264 NAL units for keyframe (IDR=5 or SPS=7)
@@ -820,7 +826,9 @@
       //   [numRegions:u16][N × {left:u16,top:u16,right:u16,bottom:u16,qp:u8,quality:u8}][nalData...]
       if (buf.length < 14) return;
       // var surfId = buf[1] | (buf[2] << 8);
-      // var mode = buf[3];
+      var mode = buf[3]; // 0=AVC420, 1=AVC444-luma, 2=AVC444-chroma
+      // Skip AVC444 chroma — luma alone gives 4:2:0 quality.
+      if (mode === 2) return;
       var destLeft = buf[4] | (buf[5] << 8);
       var destTop = buf[6] | (buf[7] << 8);
       var destRight = buf[8] | (buf[9] << 8);
@@ -833,16 +841,24 @@
 
       var isKey = isH264Keyframe(nalData);
 
-      // Lazy init on first frame
-      if (!h264Decoder) {
-        h264Decoder = createH264Decoder();
+      // Select decoder and keyframe gate based on mode.
+      var dec, gotKey;
+      if (mode === 1) {
+        // AVC444 luma — separate decoder to avoid corrupting AVC420 state.
+        if (!h264LumaDecoder) h264LumaDecoder = createH264Decoder();
+        dec = h264LumaDecoder;
+        gotKey = h264LumaGotKeyframe;
+        if (!isKey && !gotKey) return;
+        if (isKey) h264LumaGotKeyframe = true;
+      } else {
+        // AVC420
+        if (!h264Decoder) h264Decoder = createH264Decoder();
+        dec = h264Decoder;
+        gotKey = h264GotKeyframe;
+        if (!isKey && !gotKey) return;
+        if (isKey) h264GotKeyframe = true;
       }
-      if (h264Decoder.state === "closed") return;
-
-      // Drop delta frames until we receive the first keyframe to prevent
-      // green artifacts from decoding without reference data.
-      if (!isKey && !h264GotKeyframe) return;
-      if (isKey) h264GotKeyframe = true;
+      if (dec.state === "closed") return;
 
       // Parse region rects — these define which sub-rectangles of the
       // decoded H.264 frame actually changed (MS-RDPEGFX 2.2.4.4).
@@ -871,9 +887,9 @@
           timestamp: ts,
           data: nalData
         });
-        h264Decoder.decode(chunk);
+        dec.decode(chunk);
       } catch (e) {
-        console.error("H.264 decode error:", e);
+        console.error("H.264 decode error (mode=" + mode + "):", e);
         delete h264RectMap[ts];
       }
     }

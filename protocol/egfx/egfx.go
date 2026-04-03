@@ -100,11 +100,13 @@ type H264Region struct {
 	QPVal, QualityVal        byte
 }
 
-// H264Frame carries H.264 NAL data and metadata for browser-side decoding.
+// H264Frame carries H.264 NAL data and metadata for decoding.
 type H264Frame struct {
 	SurfaceID                    uint16
 	CodecMode                    byte // 0=AVC420, 1=AVC444-luma, 2=AVC444-chroma
+	AVC444v2                     bool // true when codec is RDPGFX_CODECID_AVC444v2 (chroma packing differs)
 	Left, Top, Right, Bottom     int  // destRect from WireToSurface1
+	OutputOriginX, OutputOriginY int  // screen-space origin from MapSurfaceToOutput
 	Regions                      []H264Region
 	NALData                      []byte
 }
@@ -599,7 +601,7 @@ func parseAVC420Metablock(dst []H264Region, data []byte) ([]H264Region, []byte, 
 
 // parseAVC444 parses an RDPGFX_AVC444_BITMAP_STREAM (MS-RDPEGFX 2.2.4.5).
 // Returns one or two H264Frames depending on the LC field.
-func parseAVC444(data []byte, surfID uint16, left, top, right, bottom int) ([]*H264Frame, error) {
+func parseAVC444(data []byte, surfID uint16, left, top, right, bottom int, v2 bool) ([]*H264Frame, error) {
 	if len(data) < 4 {
 		return nil, fmt.Errorf("AVC444 data too short: %d", len(data))
 	}
@@ -640,8 +642,8 @@ func parseAVC444(data []byte, surfID uint16, left, top, right, bottom int) ([]*H
 		nal2Copy := make([]byte, len(nal2))
 		copy(nal2Copy, nal2)
 		return []*H264Frame{
-			{SurfaceID: surfID, CodecMode: 1, Left: left, Top: top, Right: right, Bottom: bottom, Regions: regions1, NALData: nal1Copy},
-			{SurfaceID: surfID, CodecMode: 2, Left: left, Top: top, Right: right, Bottom: bottom, Regions: regions2, NALData: nal2Copy},
+			{SurfaceID: surfID, CodecMode: 1, AVC444v2: v2, Left: left, Top: top, Right: right, Bottom: bottom, Regions: regions1, NALData: nal1Copy},
+			{SurfaceID: surfID, CodecMode: 2, AVC444v2: v2, Left: left, Top: top, Right: right, Bottom: bottom, Regions: regions2, NALData: nal2Copy},
 		}, nil
 
 	case 1: // luma only
@@ -652,7 +654,7 @@ func parseAVC444(data []byte, surfID uint16, left, top, right, bottom int) ([]*H
 		nalCopy := make([]byte, len(nal))
 		copy(nalCopy, nal)
 		return []*H264Frame{
-			{SurfaceID: surfID, CodecMode: 1, Left: left, Top: top, Right: right, Bottom: bottom, Regions: regions, NALData: nalCopy},
+			{SurfaceID: surfID, CodecMode: 1, AVC444v2: v2, Left: left, Top: top, Right: right, Bottom: bottom, Regions: regions, NALData: nalCopy},
 		}, nil
 
 	case 2: // chroma only
@@ -663,7 +665,7 @@ func parseAVC444(data []byte, surfID uint16, left, top, right, bottom int) ([]*H
 		nalCopy := make([]byte, len(nal))
 		copy(nalCopy, nal)
 		return []*H264Frame{
-			{SurfaceID: surfID, CodecMode: 2, Left: left, Top: top, Right: right, Bottom: bottom, Regions: regions, NALData: nalCopy},
+			{SurfaceID: surfID, CodecMode: 2, AVC444v2: v2, Left: left, Top: top, Right: right, Bottom: bottom, Regions: regions, NALData: nalCopy},
 		}, nil
 	}
 	return nil, nil
@@ -842,15 +844,18 @@ func (h *Handler) handleWireToSurface1(data []byte) {
 		// Make a copy of the NAL data since bitmapData references the decompression buffer.
 		nalCopy := make([]byte, len(nalData))
 		copy(nalCopy, nalData)
+		origin := h.outputMap[surfId]
 		frame := &H264Frame{
-			SurfaceID: surfId,
-			CodecMode: 0, // AVC420
-			Left:      left,
-			Top:       top,
-			Right:     right,
-			Bottom:    bottom,
-			Regions:   regions,
-			NALData:   nalCopy,
+			SurfaceID:     surfId,
+			CodecMode:     0, // AVC420
+			Left:          left,
+			Top:           top,
+			Right:         right,
+			Bottom:        bottom,
+			OutputOriginX: origin[0],
+			OutputOriginY: origin[1],
+			Regions:       regions,
+			NALData:       nalCopy,
 		}
 		if h.inFrame {
 			h.frameH264 = append(h.frameH264, frame)
@@ -864,10 +869,20 @@ func (h *Handler) handleWireToSurface1(data []byte) {
 			h.log.LogAttrs(context.Background(), slog.LevelWarn, "AVC444 data but no H.264 callback set")
 			return
 		}
-		frames, err := parseAVC444(bitmapData, surfId, left, top, right, bottom)
+		frames, err := parseAVC444(bitmapData, surfId, left, top, right, bottom, codecId == CodecAVC444v2)
 		if err != nil {
 			h.log.LogAttrs(context.Background(), slog.LevelError, "AVC444 parse error", slog.Any("err", err))
 			return
+		}
+		avc444Origin := h.outputMap[surfId]
+		for _, f := range frames {
+			f.OutputOriginX = avc444Origin[0]
+			f.OutputOriginY = avc444Origin[1]
+			h.log.LogAttrs(context.Background(), slog.LevelDebug, "AVC444 frame",
+				slog.Int("codecMode", int(f.CodecMode)),
+				slog.Bool("v2", f.AVC444v2),
+				slog.Int("nalLen", len(f.NALData)),
+				slog.Int("regions", len(f.Regions)))
 		}
 		if h.inFrame {
 			h.frameH264 = append(h.frameH264, frames...)
