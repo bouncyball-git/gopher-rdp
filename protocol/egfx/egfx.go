@@ -12,10 +12,10 @@ import (
 	"log/slog"
 	"time"
 
-	"gopher-rdp/sloghex"
-	"gopher-rdp/protocol/rfx"
-	"gopher-rdp/protocol/rle"
-	"gopher-rdp/protocol/zgfx"
+	sloghex "github.com/bouncyball-git/gopher-rdp/util"
+	"github.com/bouncyball-git/gopher-rdp/protocol/rfx"
+	"github.com/bouncyball-git/gopher-rdp/protocol/rle"
+	"github.com/bouncyball-git/gopher-rdp/protocol/zgfx"
 )
 
 // levelTrace is a custom log level below Debug for very verbose diagnostics.

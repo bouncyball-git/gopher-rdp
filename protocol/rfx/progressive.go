@@ -8,7 +8,7 @@ import (
 	"runtime"
 	"sync"
 
-	"gopher-rdp/sloghex"
+	sloghex "github.com/bouncyball-git/gopher-rdp/util"
 )
 
 // tilePixelPool pools 64x64 RGBA pixel buffers (16384 bytes each) for decoded tiles.
