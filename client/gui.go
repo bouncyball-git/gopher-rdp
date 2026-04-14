@@ -12,6 +12,11 @@ import (
 
 const guiAvailable = true
 
+// guiDPR returns the primary monitor's device pixel ratio via Ebiten.
+func guiDPR() float64 {
+	return gui.DPR()
+}
+
 func runGUIChild() {
 	if os.Getenv("GOPHER_RDP_CHILD") != "" {
 		if err := gui.RunChild(); err != nil {

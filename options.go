@@ -40,7 +40,7 @@ type Options struct {
 	GFX                bool   // Enable RDPGFX graphics pipeline (EGFX)
 	NoAVC              bool   // Disable H.264/AVC codec (force RemoteFX/ClearCodec)
 	NoDPR              bool   // SDL: don't scale RDP resolution to physical pixels
-	NoBilinear         bool   // SDL: use nearest-neighbor instead of bilinear texture scaling
+	Interpolate        bool   // Use bilinear interpolation instead of nearest-neighbor scaling
 
 	// Experience (visual effects)
 	Wallpaper           bool // Show desktop wallpaper

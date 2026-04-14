@@ -259,7 +259,7 @@ opts.USBDevices = []rdp.USBRedirect{
 | `GFX` | `bool` | false | Enable RDPGFX graphics pipeline (CLI enables by default) |
 | `NoAVC` | `bool` | false | Disable H.264/AVC codec (force RemoteFX/ClearCodec) |
 | `NoDPR` | `bool` | false | Don't scale RDP resolution to physical pixels |
-| `NoBilinear` | `bool` | false | Use nearest-neighbor scaling instead of bilinear |
+| `Interpolate` | `bool` | false | Use bilinear interpolation instead of nearest-neighbor |
 | `KeyboardMode` | `KeyboardMode` | `KeyboardScancode` | Keyboard input mode (scancode or unicode) |
 | `HeartbeatTimeout` | `time.Duration` | 10s | Max time without server data before disconnect (0 = off) |
 | `AutoReconnect` | `bool` | false | Auto-reconnect on disconnect |
@@ -557,7 +557,7 @@ var (
 | `-no-gfx` | false | Disable RDPGFX graphics pipeline (EGFX) |
 | `-no-avc` | false | Disable H.264/AVC codec (force RemoteFX/ClearCodec) |
 | `-no-dpr` | false | Don't scale RDP resolution to physical pixels (match web behavior) |
-| `-no-bilinear` | false | Use nearest-neighbor scaling instead of bilinear (all viewers) |
+| `-interpolate` | false | Use bilinear interpolation instead of nearest-neighbor (all viewers) |
 | `-keyboard` | scancode | Keyboard input mode: `scancode` (remote layout) or `unicode` (local layout) |
 | `-gui [WxH]` | | Graphical desktop viewer (default 1600x900) |
 | `-web [port]` | 8080 | Web viewer (default port 8080) |

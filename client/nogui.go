@@ -10,6 +10,8 @@ import (
 
 const guiAvailable = false
 
+func guiDPR() float64 { return 1.0 }
+
 func runGUIChild() {}
 
 func runGUI(_ *rdp.Client, _ *rdp.Options, _ []rdp.MonitorConfig, _, _ int) error {

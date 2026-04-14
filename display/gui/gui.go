@@ -184,6 +184,12 @@ var controlKeys = map[ebiten.Key]bool{
 	ebiten.KeyNumpadEnter:  true,
 }
 
+// DPR returns the primary monitor's device pixel ratio.
+// Safe to call before RunGame.
+func DPR() float64 {
+	return ebiten.Monitor().DeviceScaleFactor()
+}
+
 // game implements ebiten.Game for the RDP viewer.
 type game struct {
 	client       *rdp.Client
@@ -225,6 +231,10 @@ type game struct {
 	// Hotkey state
 	initialW int // RDP resolution at startup (for fullscreen restore)
 	initialH int
+
+	// DPR / scaling options
+	noDPR      bool // skip DPR scaling (RDP at logical resolution)
+	interpolate bool // use bilinear interpolation instead of nearest-neighbor
 }
 
 // Run launches the graphical desktop viewer using Ebiten.
@@ -247,6 +257,8 @@ func Run(client *rdp.Client, opts *rdp.Options, width, height int) error {
 		rgbaBuf:      make([]byte, width*height*4),
 		initialW:     width,
 		initialH:     height,
+		noDPR:        opts.NoDPR,
+		interpolate:  opts.Interpolate,
 	}
 
 	// Frame-level locking: during an EGFX frame flush, beginPaint holds
@@ -489,10 +501,14 @@ func Run(client *rdp.Client, opts *rdp.Options, width, height int) error {
 		}
 	})
 
-	// Set window size in logical pixels so physical pixels match the RDP resolution.
-	// On HiDPI displays (scale > 1.0), the logical size must be smaller.
-	// Use math.Round to avoid truncation losing a pixel (e.g. 1600/1.000625 → 1599).
+	// Set window to the logical size the user requested (e.g. -gui 1800x1000).
+	// The RDP resolution (width x height) is already scaled by DPR in main.go,
+	// so the logical window size is width/DPR — matching web client behavior
+	// where the browser viewport is the logical size and RDP renders at viewport*DPR.
 	scale := ebiten.Monitor().DeviceScaleFactor()
+	if g.noDPR {
+		scale = 1.0
+	}
 	logW := int(math.Round(float64(width) / scale))
 	logH := int(math.Round(float64(height) / scale))
 	ebiten.SetWindowSize(logW, logH)
@@ -521,10 +537,13 @@ func (g *game) Update() error {
 
 	// Hotkeys (intercepted, not forwarded to remote)
 	if inpututil.IsKeyJustPressed(ebiten.KeyF11) {
+		scale := ebiten.Monitor().DeviceScaleFactor()
+		if g.noDPR {
+			scale = 1.0
+		}
 		if ebiten.IsFullscreen() {
 			// Exit fullscreen → restore initial RDP resolution.
 			ebiten.SetFullscreen(false)
-			scale := ebiten.Monitor().DeviceScaleFactor()
 			logW := int(math.Round(float64(g.initialW) / scale))
 			logH := int(math.Round(float64(g.initialH) / scale))
 			ebiten.SetWindowSize(logW, logH)
@@ -535,7 +554,6 @@ func (g *game) Update() error {
 				slog.Int("width", g.initialW), slog.Int("height", g.initialH))
 		} else {
 			// Enter fullscreen → resize RDP to monitor's physical resolution.
-			scale := ebiten.Monitor().DeviceScaleFactor()
 			monW, monH := ebiten.Monitor().Size()
 			physW := int(math.Round(float64(monW) * scale))
 			physH := int(math.Round(float64(monH) * scale))
@@ -733,11 +751,16 @@ func (g *game) Draw(screen *ebiten.Image) {
 	}
 }
 
-// DrawFinalScreen disables all filtering for pixel-perfect output.
+// DrawFinalScreen scales the offscreen buffer to the physical screen.
+// Default is nearest-neighbor (pixel-perfect); -interpolate switches to bilinear.
 func (g *game) DrawFinalScreen(screen ebiten.FinalScreen, offscreen *ebiten.Image, geoM ebiten.GeoM) {
 	op := &ebiten.DrawImageOptions{}
 	op.GeoM = geoM
-	op.Filter = ebiten.FilterNearest
+	if g.interpolate {
+		op.Filter = ebiten.FilterLinear
+	} else {
+		op.Filter = ebiten.FilterNearest
+	}
 	screen.DrawImage(offscreen, op)
 }
 
@@ -770,6 +793,9 @@ func (g *game) LayoutF(outsideWidth, outsideHeight float64) (float64, float64) {
 
 	// Convert logical size to physical pixels
 	scale := ebiten.Monitor().DeviceScaleFactor()
+	if g.noDPR {
+		scale = 1.0
+	}
 	physW := int(math.Round(outsideWidth * scale))
 	physH := int(math.Round(outsideHeight * scale))
 

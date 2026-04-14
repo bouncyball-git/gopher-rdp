@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"log/slog"
 	"net/http"
 	_ "net/http/pprof"
@@ -639,7 +640,7 @@ func main() {
 	noGfx := flag.Bool("no-gfx", false, "Disable RDPGFX graphics pipeline (EGFX)")
 	noAvc := flag.Bool("no-avc", false, "Disable H.264/AVC codec in EGFX (force RemoteFX/ClearCodec)")
 	noDPR := flag.Bool("no-dpr", false, "SDL: don't scale RDP resolution to physical pixels (match web behavior)")
-	noBilinear := flag.Bool("no-bilinear", false, "Use nearest-neighbor scaling instead of bilinear (all viewers)")
+	interpolate := flag.Bool("interpolate", false, "Use bilinear interpolation instead of nearest-neighbor (all viewers)")
 	keyboard := flag.String("keyboard", "scancode", "Keyboard input mode: scancode or unicode")
 	var guiFlag optionalString
 	flag.Var(&guiFlag, "gui", "Graphical desktop viewer (optional: -gui WxH, e.g. -gui 1920x1080)")
@@ -677,7 +678,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  -device-scale int        Physical DPI tier: 100=standard, 140=high, 180=very high\n")
 		fmt.Fprintf(os.Stderr, "                           (used with -desktop-scale for server-side UI scaling)\n")
 		fmt.Fprintf(os.Stderr, "  -no-dpr                  SDL: don't scale RDP to physical pixels (match web behavior)\n")
-		fmt.Fprintf(os.Stderr, "  -no-bilinear             Use nearest-neighbor scaling instead of bilinear (all viewers)\n")
+		fmt.Fprintf(os.Stderr, "  -interpolate             Use bilinear interpolation instead of nearest-neighbor (all viewers)\n")
 		fmt.Fprintf(os.Stderr, "  -no-gfx                  Disable RDPGFX graphics pipeline (EGFX)\n")
 		fmt.Fprintf(os.Stderr, "  -no-avc                  Disable H.264/AVC codec (force RemoteFX/ClearCodec)\n")
 		fmt.Fprintf(os.Stderr, "  -keyboard string         Keyboard input mode: scancode or unicode (default scancode)\n")
@@ -1014,7 +1015,7 @@ func main() {
 		GFX:                  !*noGfx,
 		NoAVC:                *noAvc,
 		NoDPR:                *noDPR,
-		NoBilinear:           *noBilinear,
+		Interpolate:          *interpolate,
 		Camera:               *camera,
 		KeyboardMode:         kbMode,
 		HeartbeatTimeout:     time.Duration(*heartbeat) * time.Second,
@@ -1155,8 +1156,15 @@ func main() {
 			}
 			opts.Monitors = proto
 		} else {
-			opts.Width = uint16(guiW)
-			opts.Height = uint16(guiH)
+			// Like the web client: guiW x guiH is the logical (window) size.
+			// RDP renders at logical * DPR so each RDP pixel = 1 physical pixel.
+			// With -no-dpr, DPR is forced to 1.0 (RDP = logical).
+			dpr := guiDPR()
+			if *noDPR {
+				dpr = 1.0
+			}
+			opts.Width = uint16(math.Round(float64(guiW) * dpr))
+			opts.Height = uint16(math.Round(float64(guiH) * dpr))
 		}
 	}
 

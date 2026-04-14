@@ -58,7 +58,7 @@
     if (!gl) gl = canvas.getContext("webgl", {antialias: false, alpha: false});
     if (!gl) {
       ctx = canvas.getContext("2d");
-      if (params.get("nearest") === "1") canvas.style.imageRendering = "pixelated";
+      if (params.get("interpolate") !== "1") canvas.style.imageRendering = "pixelated";
       console.log("canvas: using Canvas 2D fallback");
       ctx.fillStyle = "#000";
       ctx.fillRect(0, 0, W, H);
@@ -89,7 +89,7 @@
     var aPos = gl.getAttribLocation(prog, "a_pos");
     gl.enableVertexAttribArray(aPos);
     gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
-    glFilter = params.get("nearest") === "1" ? gl.NEAREST : gl.LINEAR;
+    glFilter = params.get("interpolate") === "1" ? gl.LINEAR : gl.NEAREST;
     glTex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, glTex);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, glFilter);

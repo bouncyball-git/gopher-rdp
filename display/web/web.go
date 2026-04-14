@@ -121,8 +121,8 @@ func NewAutoWebHandler(opts *rdp.Options) (http.Handler, <-chan struct{}) {
 				abuf = opts.AudioOut.BufMs
 			}
 			url := fmt.Sprintf("/?kb=%s&abuf=%d", kb, abuf)
-			if opts.NoBilinear {
-				url += "&nearest=1"
+			if opts.Interpolate {
+				url += "&interpolate=1"
 			}
 			if opts.NoDPR {
 				url += "&nodpr=1"
