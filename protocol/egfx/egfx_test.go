@@ -3,6 +3,7 @@ package egfx
 import (
 	"encoding/binary"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 )
@@ -156,8 +157,8 @@ func TestFrameAcknowledge(t *testing.T) {
 	}
 
 	queueDepth := binary.LittleEndian.Uint32(sent[8:12])
-	if queueDepth != 0xFFFFFFFF { // QUEUE_DEPTH_UNAVAILABLE
-		t.Fatalf("queueDepth = %d, want 0xFFFFFFFF (QUEUE_DEPTH_UNAVAILABLE)", queueDepth)
+	if queueDepth != 0x00000000 { // QUEUE_DEPTH_UNAVAILABLE per MS-RDPEGFX 2.2.3.1
+		t.Fatalf("queueDepth = 0x%08X, want 0x00000000 (QUEUE_DEPTH_UNAVAILABLE); 0xFFFFFFFF would be SUSPEND_FRAME_ACKNOWLEDGEMENT and disables adaptive throttling", queueDepth)
 	}
 
 	frameId := binary.LittleEndian.Uint32(sent[12:16])
@@ -168,6 +169,119 @@ func TestFrameAcknowledge(t *testing.T) {
 	totalDecoded := binary.LittleEndian.Uint32(sent[16:20])
 	if totalDecoded != 1 {
 		t.Fatalf("totalDecoded = %d, want 1", totalDecoded)
+	}
+}
+
+// TestQoEFrameAcknowledge verifies that on cap version 10+ a
+// RDPGFX_QOE_FRAME_ACKNOWLEDGE_PDU is sent in addition to the regular
+// frame ack, with non-zero timeDiffSE and the correct frame ID.
+func TestQoEFrameAcknowledge(t *testing.T) {
+	var mu sync.Mutex
+	var sends [][]byte
+	h := NewHandler(func(data []byte) error {
+		mu.Lock()
+		defer mu.Unlock()
+		buf := make([]byte, len(data))
+		copy(buf, data)
+		sends = append(sends, buf)
+		return nil
+	}, slog.New(slog.DiscardHandler))
+
+	// Negotiate cap version 10 so QoE acks are enabled.
+	confirmData := make([]byte, 12)
+	binary.LittleEndian.PutUint32(confirmData[0:4], CapVersion10)
+	binary.LittleEndian.PutUint32(confirmData[4:8], 4)
+	h.handleCapsConfirm(confirmData)
+
+	// Start frame
+	startData := make([]byte, 8)
+	binary.LittleEndian.PutUint32(startData[0:4], 0)   // timestamp
+	binary.LittleEndian.PutUint32(startData[4:8], 99)  // frameId
+	h.handleStartFrame(startData)
+
+	// Brief delay so timeDiffSE is measurable.
+	time.Sleep(5 * time.Millisecond)
+
+	// End frame — expect regular ack + QoE ack via ackCh goroutine
+	endData := make([]byte, 4)
+	binary.LittleEndian.PutUint32(endData[0:4], 99)
+	h.handleEndFrame(endData)
+	time.Sleep(50 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sends) != 2 {
+		t.Fatalf("send count = %d, want 2 (regular ack + QoE ack)", len(sends))
+	}
+
+	// Find the QoE ack (cmdId 0x0016) — order is not guaranteed across the
+	// async ack channel, but in practice the regular ack is sent first.
+	var qoe []byte
+	for _, b := range sends {
+		if len(b) >= 2 && binary.LittleEndian.Uint16(b[0:2]) == CmdQoEFrameAcknowledge {
+			qoe = b
+			break
+		}
+	}
+	if qoe == nil {
+		t.Fatal("no QoE frame ack found in sent buffers")
+	}
+
+	if len(qoe) != 20 {
+		t.Fatalf("QoE ack = %d bytes, want 20", len(qoe))
+	}
+	if got := binary.LittleEndian.Uint32(qoe[4:8]); got != 20 {
+		t.Errorf("pduLength = %d, want 20", got)
+	}
+	if got := binary.LittleEndian.Uint32(qoe[8:12]); got != 99 {
+		t.Errorf("frameId = %d, want 99", got)
+	}
+	if got := binary.LittleEndian.Uint32(qoe[12:16]); got == 0 {
+		t.Errorf("timestamp = 0, want non-zero")
+	}
+	diffSE := binary.LittleEndian.Uint16(qoe[16:18])
+	if diffSE == 0 {
+		t.Errorf("timeDiffSE = 0, want >= 5 (we slept 5ms before EndFrame)")
+	}
+	// timeDiffEDR may legitimately be 0 since no display callbacks are wired.
+}
+
+// TestQoEFrameAcknowledgeOnV81Suppressed verifies that QoE acks are NOT
+// sent when the negotiated cap version is below v10 — sending them on
+// v8/v8.1 is a protocol error per MS-RDPEGFX 2.2.3.2.
+func TestQoEFrameAcknowledgeOnV81Suppressed(t *testing.T) {
+	var mu sync.Mutex
+	var sends [][]byte
+	h := NewHandler(func(data []byte) error {
+		mu.Lock()
+		defer mu.Unlock()
+		buf := make([]byte, len(data))
+		copy(buf, data)
+		sends = append(sends, buf)
+		return nil
+	}, slog.New(slog.DiscardHandler))
+
+	// Negotiate cap version 8.1 — QoE must be suppressed.
+	confirmData := make([]byte, 12)
+	binary.LittleEndian.PutUint32(confirmData[0:4], CapVersion81)
+	binary.LittleEndian.PutUint32(confirmData[4:8], 4)
+	h.handleCapsConfirm(confirmData)
+
+	startData := make([]byte, 8)
+	binary.LittleEndian.PutUint32(startData[4:8], 7)
+	h.handleStartFrame(startData)
+
+	endData := make([]byte, 4)
+	binary.LittleEndian.PutUint32(endData[0:4], 7)
+	h.handleEndFrame(endData)
+	time.Sleep(50 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, b := range sends {
+		if len(b) >= 2 && binary.LittleEndian.Uint16(b[0:2]) == CmdQoEFrameAcknowledge {
+			t.Fatal("QoE frame ack must not be sent on cap version below 10")
+		}
 	}
 }
 

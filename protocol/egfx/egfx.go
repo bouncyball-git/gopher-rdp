@@ -10,11 +10,12 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log/slog"
+	"time"
 
-	"github.com/bouncyball-git/gopher-rdp/util"
-	"github.com/bouncyball-git/gopher-rdp/protocol/rfx"
-	"github.com/bouncyball-git/gopher-rdp/protocol/rle"
-	"github.com/bouncyball-git/gopher-rdp/protocol/zgfx"
+	"gopher-rdp/sloghex"
+	"gopher-rdp/protocol/rfx"
+	"gopher-rdp/protocol/rle"
+	"gopher-rdp/protocol/zgfx"
 )
 
 // levelTrace is a custom log level below Debug for very verbose diagnostics.
@@ -43,6 +44,7 @@ const (
 	CmdCapsAdvertise      = 0x0012
 	CmdCapsConfirm        = 0x0013
 	CmdMapSurfaceToWindow = 0x0015
+	CmdQoEFrameAcknowledge = 0x0016 // MS-RDPEGFX 2.2.3.2 (v10+)
 	CmdMapSurfaceToScaledOutput = 0x0017
 )
 
@@ -151,6 +153,13 @@ type Handler struct {
 	onH264Frame     func(*H264Frame) // H.264 pass-through callback
 	progressive    *rfx.Decoder // RemoteFX Progressive codec decoder
 	avcEnabled      bool // advertise AVC support in CAPS_ADVERTISE
+
+	// Negotiated cap version from CAPS_CONFIRM. Used to gate v10+ features
+	// like RDPGFX_QOE_FRAME_ACKNOWLEDGE_PDU. Zero until caps are confirmed.
+	negotiatedCapVersion uint32
+	// Wall-clock millisecond timestamp captured at handleStartFrame. Used
+	// as the timestamp field of the QoE ack and to compute timeDiffSE.
+	frameStartMs int64
 
 	// Frame batching: accumulate individual dirty rects during
 	// StartFrame..EndFrame and emit each independently at EndFrame.
@@ -437,6 +446,8 @@ func egfxCmdName(cmdId uint16) string {
 		return "CapsConfirm"
 	case CmdMapSurfaceToWindow:
 		return "MapSurfaceToWindow"
+	case CmdQoEFrameAcknowledge:
+		return "QoEFrameAcknowledge"
 	case CmdMapSurfaceToScaledOutput:
 		return "MapSurfaceToScaledOutput"
 	default:
@@ -445,7 +456,7 @@ func egfxCmdName(cmdId uint16) string {
 }
 
 func (h *Handler) handleCommand(cmdId uint16, data []byte) {
-	h.log.LogAttrs(context.Background(), slog.LevelDebug, "command received", slog.String("cmd", egfxCmdName(cmdId)), util.Hex4("cmdId", cmdId), slog.Int("len", len(data)))
+	h.log.LogAttrs(context.Background(), slog.LevelDebug, "command received", slog.String("cmd", egfxCmdName(cmdId)), sloghex.Hex4("cmdId", cmdId), slog.Int("len", len(data)))
 	switch cmdId {
 	case CmdCreateSurface:
 		h.handleCreateSurface(data)
@@ -480,7 +491,7 @@ func (h *Handler) handleCommand(cmdId uint16, data []byte) {
 	case CmdDeleteEncodingCtx:
 		h.handleDeleteEncodingCtx(data)
 	default:
-		h.log.LogAttrs(context.Background(), slog.LevelWarn, "unhandled command", util.Hex4("cmdId", cmdId), slog.Int("len", len(data)))
+		h.log.LogAttrs(context.Background(), slog.LevelWarn, "unhandled command", sloghex.Hex4("cmdId", cmdId), slog.Int("len", len(data)))
 	}
 }
 
@@ -677,6 +688,9 @@ func (h *Handler) handleStartFrame(data []byte) {
 	}
 	// timestamp := binary.LittleEndian.Uint32(data[0:4])
 	h.curFrameID = binary.LittleEndian.Uint32(data[4:8])
+	// Capture decode start for the QoE frame ack (MS-RDPEGFX 2.2.3.2). The
+	// server uses (timeDiffSE, timeDiffEDR) to tune Progressive RFX quality.
+	h.frameStartMs = time.Now().UnixMilli()
 	h.inFrame = true
 	h.frameDirtyRects = h.frameDirtyRects[:0]
 	clear(h.frameH264)
@@ -698,7 +712,11 @@ func (h *Handler) handleEndFrame(data []byte) {
 	ackBuf := make([]byte, 20)
 	binary.LittleEndian.PutUint16(ackBuf[0:2], CmdFrameAcknowledge)
 	binary.LittleEndian.PutUint32(ackBuf[4:8], 20) // pduLength
-	binary.LittleEndian.PutUint32(ackBuf[8:12], 0xFFFFFFFF) // queueDepth = QUEUE_DEPTH_UNAVAILABLE
+	// queueDepth = QUEUE_DEPTH_UNAVAILABLE (0x00000000): client decodes synchronously
+	// so the queue depth is effectively zero on each ack. Sending 0xFFFFFFFF would
+	// be SUSPEND_FRAME_ACKNOWLEDGEMENT, which disables server-side adaptive quality
+	// throttling for Progressive RFX and other EGFX codecs.
+	binary.LittleEndian.PutUint32(ackBuf[8:12], 0x00000000)
 	binary.LittleEndian.PutUint32(ackBuf[12:16], frameID)
 	binary.LittleEndian.PutUint32(ackBuf[16:20], h.framesDecoded)
 	select {
@@ -710,6 +728,8 @@ func (h *Handler) handleEndFrame(data []byte) {
 	}
 
 	// Flush each accumulated dirty rect as an independent display update.
+	// Measure display callback duration for the QoE timeDiffEDR field.
+	displayStart := time.Now()
 	if h.onBeginPaint != nil {
 		h.onBeginPaint()
 	}
@@ -724,9 +744,52 @@ func (h *Handler) handleEndFrame(data []byte) {
 	if h.onEndPaint != nil {
 		h.onEndPaint()
 	}
+	displayMs := time.Since(displayStart).Milliseconds()
 	h.frameDirtyRects = h.frameDirtyRects[:0]
 	clear(h.frameH264)
 	h.frameH264 = h.frameH264[:0]
+
+	// QoE Frame Acknowledge (MS-RDPEGFX 2.2.3.2). Only valid on cap version
+	// 10 and above; sending on v8/v8.1 is a protocol error. Provides decode
+	// + display latency so the server can adapt Progressive RFX quality
+	// tiers to actual client performance.
+	if h.negotiatedCapVersion >= CapVersion10 && h.frameStartMs != 0 {
+		h.sendQoEFrameAck(frameID, displayMs)
+	}
+}
+
+// sendQoEFrameAck builds and dispatches a RDPGFX_QOE_FRAME_ACKNOWLEDGE_PDU.
+// Layout: header(8) + frameId(4) + timestamp(4) + timeDiffSE(2) + timeDiffEDR(2) = 20.
+//
+//	timestamp:    low 32 bits of frameStartMs (matches FreeRDP semantics)
+//	timeDiffSE:   total ms from handleStartFrame to now (decode + display)
+//	timeDiffEDR:  ms spent in display callbacks (clamped to u16)
+func (h *Handler) sendQoEFrameAck(frameID uint32, displayMs int64) {
+	diffSE := time.Now().UnixMilli() - h.frameStartMs
+	if diffSE < 0 || diffSE > 65000 {
+		diffSE = 0
+	}
+	if displayMs < 0 || displayMs > 65000 {
+		displayMs = 0
+	}
+	qoeBuf := make([]byte, 20)
+	binary.LittleEndian.PutUint16(qoeBuf[0:2], CmdQoEFrameAcknowledge)
+	binary.LittleEndian.PutUint32(qoeBuf[4:8], 20) // pduLength
+	binary.LittleEndian.PutUint32(qoeBuf[8:12], frameID)
+	binary.LittleEndian.PutUint32(qoeBuf[12:16], uint32(h.frameStartMs))
+	binary.LittleEndian.PutUint16(qoeBuf[16:18], uint16(diffSE))
+	binary.LittleEndian.PutUint16(qoeBuf[18:20], uint16(displayMs))
+	h.log.LogAttrs(context.Background(), slog.LevelDebug, "QoE frame ack",
+		slog.Int64("frameId", int64(frameID)),
+		slog.Int64("timeDiffSE", diffSE),
+		slog.Int64("timeDiffEDR", displayMs))
+	select {
+	case h.ackCh <- qoeBuf:
+	default:
+		if err := h.sendFn(qoeBuf); err != nil {
+			h.log.LogAttrs(context.Background(), slog.LevelError, "failed to send QoE frame ack", slog.Any("err", err))
+		}
+	}
 }
 
 func (h *Handler) handleWireToSurface1(data []byte) {
@@ -762,7 +825,7 @@ func (h *Handler) handleWireToSurface1(data []byte) {
 		return
 	}
 
-	h.log.LogAttrs(context.Background(), slog.LevelDebug, "WireToSurface1", slog.Int("surfaceId", int(surfId)), util.Hex4("codecId", codecId),
+	h.log.LogAttrs(context.Background(), slog.LevelDebug, "WireToSurface1", slog.Int("surfaceId", int(surfId)), sloghex.Hex4("codecId", codecId),
 		slog.Int("left", left), slog.Int("top", top), slog.Int("right", right), slog.Int("bottom", bottom), slog.Int("width", w), slog.Int("height", hh), slog.Int("bitmapLen", int(bitmapLen)))
 
 	var pixels []byte
@@ -785,24 +848,15 @@ func (h *Handler) handleWireToSurface1(data []byte) {
 		pixels = h.codecBuf
 
 	case CodecPlanar:
-		// RDP 6.0 Planar Codec — same as legacy bitmap compression.
-		// Outputs bottom-up RGBA; flip to top-down in place.
+		// RDP 6.0 Planar Codec. In EGFX, planar wire data is already
+		// top-down (FreeRDP gfx.c passes vFlip=FALSE). DecompressPlanar
+		// preserves wire order, so no flip is needed here. The bottom-up
+		// flip is only required for legacy bitmap updates (client.go).
 		var err error
 		h.codecBuf, err = rle.DecompressPlanar(h.codecBuf[:0], w, hh, bitmapData)
 		if err != nil {
 			h.log.LogAttrs(context.Background(), slog.LevelError, "planar decompress error", slog.Any("err", err))
 			return
-		}
-		// Flip bottom-up → top-down in place
-		rowBytes := w * 4
-		for y := 0; y < hh/2; y++ {
-			topOff := y * rowBytes
-			botOff := (hh - 1 - y) * rowBytes
-			topRow := h.codecBuf[topOff : topOff+rowBytes]
-			botRow := h.codecBuf[botOff : botOff+rowBytes]
-			for i := range rowBytes {
-				topRow[i], botRow[i] = botRow[i], topRow[i]
-			}
 		}
 		pixels = h.codecBuf
 
@@ -894,7 +948,7 @@ func (h *Handler) handleWireToSurface1(data []byte) {
 		return
 
 	default:
-		h.log.LogAttrs(context.Background(), slog.LevelWarn, "unsupported codec", util.Hex4("codecId", codecId))
+		h.log.LogAttrs(context.Background(), slog.LevelWarn, "unsupported codec", sloghex.Hex4("codecId", codecId))
 		return
 	}
 
@@ -931,7 +985,7 @@ func (h *Handler) handleWireToSurface2(data []byte) {
 	bitmapLen := binary.LittleEndian.Uint32(data[9:13])
 
 	if codecId != CodecProgressive {
-		h.log.LogAttrs(context.Background(), slog.LevelWarn, "WireToSurface2 unsupported codec", util.Hex4("codecId", codecId),
+		h.log.LogAttrs(context.Background(), slog.LevelWarn, "WireToSurface2 unsupported codec", sloghex.Hex4("codecId", codecId),
 			slog.Int("surfaceId", int(surfId)), slog.Int("ctxId", int(ctxId)), slog.Int("bitmapLen", int(bitmapLen)))
 		return
 	}
@@ -1143,7 +1197,8 @@ func (h *Handler) handleCapsConfirm(data []byte) {
 	version := binary.LittleEndian.Uint32(data[0:4])
 	// capsDataLength := binary.LittleEndian.Uint32(data[4:8])
 	// capsData/flags := binary.LittleEndian.Uint32(data[8:12])
-	h.log.LogAttrs(context.Background(), slog.LevelInfo, "caps confirmed", util.Hex8("version", version))
+	h.negotiatedCapVersion = version
+	h.log.LogAttrs(context.Background(), slog.LevelInfo, "caps confirmed", sloghex.Hex8("version", version))
 }
 
 func (h *Handler) handleSolidFill(data []byte) {

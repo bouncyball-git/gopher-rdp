@@ -176,8 +176,8 @@ func TestCacheReset(t *testing.T) {
 }
 
 func TestSequenceNumberMismatch(t *testing.T) {
-	// Warn on mismatch but continue decoding (don't abort).
-	// Aborting would cause ALL subsequent ClearCodec tiles to fail.
+	// Abort on mismatch (matching FreeRDP), but advance seqNumber so
+	// subsequent tiles can re-sync.
 	d := New(slog.New(slog.DiscardHandler))
 	d.seqNumber = 5 // expect seq=5
 
@@ -186,10 +186,10 @@ func TestSequenceNumberMismatch(t *testing.T) {
 	src = append(src, comp[:]...)
 
 	_, err := d.Decompress(nil, 1, 1, src)
-	if err != nil {
-		t.Fatalf("expected no error on seq mismatch, got: %v", err)
+	if err == nil {
+		t.Fatal("expected error on sequence number mismatch, got nil")
 	}
-	// seqNumber should advance past the mismatch
+	// seqNumber should advance past the mismatch so later tiles can re-sync
 	if d.seqNumber != 4 {
 		t.Fatalf("expected seqNumber=4 after processing seq=3, got %d", d.seqNumber)
 	}

@@ -17,6 +17,20 @@ package rfx
 //   even = L - (H_left + H_right) / 2
 //   odd  = (even_left + even_right) / 2 + 2 * H
 
+// clampi16 saturates an int32 to the int16 range [-32768, 32767],
+// matching FreeRDP's clampi16() in progressive.c. Go's int16() truncates
+// (wraps), which produces wildly incorrect values when DWT intermediates
+// overflow — corrupting high-contrast edges like text and UI borders.
+func clampi16(v int32) int16 {
+	if v < -32768 {
+		return -32768
+	}
+	if v > 32767 {
+		return 32767
+	}
+	return int16(v)
+}
+
 func extBandL(level int) int {
 	return (64 >> uint(level)) + 1
 }
@@ -84,7 +98,7 @@ func dwtLevelExt(buf, tmp []int16, level int) {
 //	even = L - (H_left + H_right) / 2
 //	odd  = (even_left + even_right) / 2 + 2 * H
 //
-// int16() truncation matches C's INT16 wraparound (2's complement overflow).
+// clampi16() saturates intermediates to int16 range, matching FreeRDP progressive.c.
 func idwtHoriz(low []int16, lowStep int, high []int16, highStep int,
 	dst []int16, dstStep int, nLow, nHigh, nRows int) {
 
@@ -97,7 +111,7 @@ func idwtHoriz(low []int16, lowStep int, high []int16, highStep int,
 		li, hi := 1, 1
 		h0 := int32(pH[0])
 		l0 := int32(pL[0])
-		x0 := int16(l0 - h0)
+		x0 := clampi16(l0 - h0)
 		x2 := x0
 		xi := 0
 
@@ -106,8 +120,8 @@ func idwtHoriz(low []int16, lowStep int, high []int16, highStep int,
 			hi++
 			l0 = int32(pL[li])
 			li++
-			x2 = int16(l0 - (h0+h1)/2)
-			x1 := int16((int32(x0)+int32(x2))/2 + 2*h0)
+			x2 = clampi16(l0 - (h0+h1)/2)
+			x1 := clampi16((int32(x0)+int32(x2))/2 + 2*h0)
 			pX[xi] = x0
 			xi++
 			pX[xi] = x1
@@ -120,28 +134,28 @@ func idwtHoriz(low []int16, lowStep int, high []int16, highStep int,
 			if nLow <= nHigh {
 				pX[xi] = x2
 				xi++
-				pX[xi] = int16(int32(x2) + 2*h0)
+				pX[xi] = clampi16(int32(x2) + 2*h0)
 			} else {
 				l0 = int32(pL[li])
-				x0 = int16(l0 - h0)
+				x0 = clampi16(l0 - h0)
 				pX[xi] = x2
 				xi++
-				pX[xi] = int16((int32(x0)+int32(x2))/2 + 2*h0)
+				pX[xi] = clampi16((int32(x0)+int32(x2))/2 + 2*h0)
 				xi++
 				pX[xi] = x0
 			}
 		} else {
 			l0 = int32(pL[li])
 			li++
-			x0 = int16(l0 - h0/2)
+			x0 = clampi16(l0 - h0/2)
 			pX[xi] = x2
 			xi++
-			pX[xi] = int16((int32(x0)+int32(x2))/2 + 2*h0)
+			pX[xi] = clampi16((int32(x0)+int32(x2))/2 + 2*h0)
 			xi++
 			pX[xi] = x0
 			xi++
 			l0 = int32(pL[li])
-			pX[xi] = int16((int32(x0) + l0) / 2)
+			pX[xi] = clampi16((int32(x0) + l0) / 2)
 		}
 	}
 }
@@ -173,8 +187,8 @@ func idwtVertCol4(low []int16, lowStep int, high []int16, highStep int,
 
 	h0a, h0b, h0c, h0d := int32(high[col]), int32(high[col+1]), int32(high[col+2]), int32(high[col+3])
 	l0a, l0b, l0c, l0d := int32(low[col]), int32(low[col+1]), int32(low[col+2]), int32(low[col+3])
-	x0a, x0b := int16(l0a-h0a), int16(l0b-h0b)
-	x0c, x0d := int16(l0c-h0c), int16(l0d-h0d)
+	x0a, x0b := clampi16(l0a-h0a), clampi16(l0b-h0b)
+	x0c, x0d := clampi16(l0c-h0c), clampi16(l0d-h0d)
 	x2a, x2b, x2c, x2d := x0a, x0b, x0c, x0d
 
 	for j := 0; j < nHigh-1; j++ {
@@ -185,20 +199,20 @@ func idwtVertCol4(low []int16, lowStep int, high []int16, highStep int,
 		l0c, l0d = int32(low[lOff+2]), int32(low[lOff+3])
 		lOff += lowStep
 
-		x2a = int16(l0a - (h0a+h1a)/2)
-		x2b = int16(l0b - (h0b+h1b)/2)
-		x2c = int16(l0c - (h0c+h1c)/2)
-		x2d = int16(l0d - (h0d+h1d)/2)
+		x2a = clampi16(l0a - (h0a+h1a)/2)
+		x2b = clampi16(l0b - (h0b+h1b)/2)
+		x2c = clampi16(l0c - (h0c+h1c)/2)
+		x2d = clampi16(l0d - (h0d+h1d)/2)
 
 		dst[xOff] = x0a
 		dst[xOff+1] = x0b
 		dst[xOff+2] = x0c
 		dst[xOff+3] = x0d
 		xOff += dstStep
-		dst[xOff] = int16((int32(x0a)+int32(x2a))/2 + 2*h0a)
-		dst[xOff+1] = int16((int32(x0b)+int32(x2b))/2 + 2*h0b)
-		dst[xOff+2] = int16((int32(x0c)+int32(x2c))/2 + 2*h0c)
-		dst[xOff+3] = int16((int32(x0d)+int32(x2d))/2 + 2*h0d)
+		dst[xOff] = clampi16((int32(x0a)+int32(x2a))/2 + 2*h0a)
+		dst[xOff+1] = clampi16((int32(x0b)+int32(x2b))/2 + 2*h0b)
+		dst[xOff+2] = clampi16((int32(x0c)+int32(x2c))/2 + 2*h0c)
+		dst[xOff+3] = clampi16((int32(x0d)+int32(x2d))/2 + 2*h0d)
 		xOff += dstStep
 
 		x0a, x0b, x0c, x0d = x2a, x2b, x2c, x2d
@@ -212,26 +226,26 @@ func idwtVertCol4(low []int16, lowStep int, high []int16, highStep int,
 			dst[xOff+2] = x2c
 			dst[xOff+3] = x2d
 			xOff += dstStep
-			dst[xOff] = int16(int32(x2a) + 2*h0a)
-			dst[xOff+1] = int16(int32(x2b) + 2*h0b)
-			dst[xOff+2] = int16(int32(x2c) + 2*h0c)
-			dst[xOff+3] = int16(int32(x2d) + 2*h0d)
+			dst[xOff] = clampi16(int32(x2a) + 2*h0a)
+			dst[xOff+1] = clampi16(int32(x2b) + 2*h0b)
+			dst[xOff+2] = clampi16(int32(x2c) + 2*h0c)
+			dst[xOff+3] = clampi16(int32(x2d) + 2*h0d)
 		} else {
 			l0a, l0b = int32(low[lOff]), int32(low[lOff+1])
 			l0c, l0d = int32(low[lOff+2]), int32(low[lOff+3])
-			x0a = int16(l0a - h0a)
-			x0b = int16(l0b - h0b)
-			x0c = int16(l0c - h0c)
-			x0d = int16(l0d - h0d)
+			x0a = clampi16(l0a - h0a)
+			x0b = clampi16(l0b - h0b)
+			x0c = clampi16(l0c - h0c)
+			x0d = clampi16(l0d - h0d)
 			dst[xOff] = x2a
 			dst[xOff+1] = x2b
 			dst[xOff+2] = x2c
 			dst[xOff+3] = x2d
 			xOff += dstStep
-			dst[xOff] = int16((int32(x0a)+int32(x2a))/2 + 2*h0a)
-			dst[xOff+1] = int16((int32(x0b)+int32(x2b))/2 + 2*h0b)
-			dst[xOff+2] = int16((int32(x0c)+int32(x2c))/2 + 2*h0c)
-			dst[xOff+3] = int16((int32(x0d)+int32(x2d))/2 + 2*h0d)
+			dst[xOff] = clampi16((int32(x0a)+int32(x2a))/2 + 2*h0a)
+			dst[xOff+1] = clampi16((int32(x0b)+int32(x2b))/2 + 2*h0b)
+			dst[xOff+2] = clampi16((int32(x0c)+int32(x2c))/2 + 2*h0c)
+			dst[xOff+3] = clampi16((int32(x0d)+int32(x2d))/2 + 2*h0d)
 			xOff += dstStep
 			dst[xOff] = x0a
 			dst[xOff+1] = x0b
@@ -242,19 +256,19 @@ func idwtVertCol4(low []int16, lowStep int, high []int16, highStep int,
 		l0a, l0b = int32(low[lOff]), int32(low[lOff+1])
 		l0c, l0d = int32(low[lOff+2]), int32(low[lOff+3])
 		lOff += lowStep
-		x0a = int16(l0a - h0a/2)
-		x0b = int16(l0b - h0b/2)
-		x0c = int16(l0c - h0c/2)
-		x0d = int16(l0d - h0d/2)
+		x0a = clampi16(l0a - h0a/2)
+		x0b = clampi16(l0b - h0b/2)
+		x0c = clampi16(l0c - h0c/2)
+		x0d = clampi16(l0d - h0d/2)
 		dst[xOff] = x2a
 		dst[xOff+1] = x2b
 		dst[xOff+2] = x2c
 		dst[xOff+3] = x2d
 		xOff += dstStep
-		dst[xOff] = int16((int32(x0a)+int32(x2a))/2 + 2*h0a)
-		dst[xOff+1] = int16((int32(x0b)+int32(x2b))/2 + 2*h0b)
-		dst[xOff+2] = int16((int32(x0c)+int32(x2c))/2 + 2*h0c)
-		dst[xOff+3] = int16((int32(x0d)+int32(x2d))/2 + 2*h0d)
+		dst[xOff] = clampi16((int32(x0a)+int32(x2a))/2 + 2*h0a)
+		dst[xOff+1] = clampi16((int32(x0b)+int32(x2b))/2 + 2*h0b)
+		dst[xOff+2] = clampi16((int32(x0c)+int32(x2c))/2 + 2*h0c)
+		dst[xOff+3] = clampi16((int32(x0d)+int32(x2d))/2 + 2*h0d)
 		xOff += dstStep
 		dst[xOff] = x0a
 		dst[xOff+1] = x0b
@@ -263,10 +277,10 @@ func idwtVertCol4(low []int16, lowStep int, high []int16, highStep int,
 		xOff += dstStep
 		l0a, l0b = int32(low[lOff]), int32(low[lOff+1])
 		l0c, l0d = int32(low[lOff+2]), int32(low[lOff+3])
-		dst[xOff] = int16((int32(x0a) + l0a) / 2)
-		dst[xOff+1] = int16((int32(x0b) + l0b) / 2)
-		dst[xOff+2] = int16((int32(x0c) + l0c) / 2)
-		dst[xOff+3] = int16((int32(x0d) + l0d) / 2)
+		dst[xOff] = clampi16((int32(x0a) + l0a) / 2)
+		dst[xOff+1] = clampi16((int32(x0b) + l0b) / 2)
+		dst[xOff+2] = clampi16((int32(x0c) + l0c) / 2)
+		dst[xOff+3] = clampi16((int32(x0d) + l0d) / 2)
 	}
 }
 
@@ -348,7 +362,7 @@ func idwtVertCol1(low []int16, lowStep int, high []int16, highStep int,
 
 	h0 := int32(high[col])
 	l0 := int32(low[col])
-	x0 := int16(l0 - h0)
+	x0 := clampi16(l0 - h0)
 	x2 := x0
 
 	for j := 0; j < nHigh-1; j++ {
@@ -356,8 +370,8 @@ func idwtVertCol1(low []int16, lowStep int, high []int16, highStep int,
 		hOff += highStep
 		l0 = int32(low[lOff])
 		lOff += lowStep
-		x2 = int16(l0 - (h0+h1)/2)
-		x1 := int16((int32(x0)+int32(x2))/2 + 2*h0)
+		x2 = clampi16(l0 - (h0+h1)/2)
+		x1 := clampi16((int32(x0)+int32(x2))/2 + 2*h0)
 		dst[xOff] = x0
 		xOff += dstStep
 		dst[xOff] = x1
@@ -370,27 +384,27 @@ func idwtVertCol1(low []int16, lowStep int, high []int16, highStep int,
 		if nLow <= nHigh {
 			dst[xOff] = x2
 			xOff += dstStep
-			dst[xOff] = int16(int32(x2) + 2*h0)
+			dst[xOff] = clampi16(int32(x2) + 2*h0)
 		} else {
 			l0 = int32(low[lOff])
-			x0 = int16(l0 - h0)
+			x0 = clampi16(l0 - h0)
 			dst[xOff] = x2
 			xOff += dstStep
-			dst[xOff] = int16((int32(x0)+int32(x2))/2 + 2*h0)
+			dst[xOff] = clampi16((int32(x0)+int32(x2))/2 + 2*h0)
 			xOff += dstStep
 			dst[xOff] = x0
 		}
 	} else {
 		l0 = int32(low[lOff])
 		lOff += lowStep
-		x0 = int16(l0 - h0/2)
+		x0 = clampi16(l0 - h0/2)
 		dst[xOff] = x2
 		xOff += dstStep
-		dst[xOff] = int16((int32(x0)+int32(x2))/2 + 2*h0)
+		dst[xOff] = clampi16((int32(x0)+int32(x2))/2 + 2*h0)
 		xOff += dstStep
 		dst[xOff] = x0
 		xOff += dstStep
 		l0 = int32(low[lOff])
-		dst[xOff] = int16((int32(x0) + l0) / 2)
+		dst[xOff] = clampi16((int32(x0) + l0) / 2)
 	}
 }

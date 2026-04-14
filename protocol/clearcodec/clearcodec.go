@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/bouncyball-git/gopher-rdp/protocol/nscodec"
+	"gopher-rdp/protocol/nscodec"
 )
 
 const levelTrace = slog.LevelDebug - 4
@@ -90,11 +90,14 @@ func (d *Decoder) Decompress(dst []byte, width, height int, src []byte) ([]byte,
 		off += 2
 	}
 
-	// Validate sequence number (warn but continue processing)
+	// Validate sequence number. On mismatch, abort the tile (matching
+	// FreeRDP clear.c). We still advance seqNumber so subsequent tiles
+	// can re-sync.
 	if d.seqNumber != 0 && seqNumber != d.seqNumber {
-		// Don't abort — log a warning and keep decoding.
-		// Aborting would cause ALL subsequent ClearCodec tiles to fail
-		// because our seqNumber stays out of sync.
+		d.log.LogAttrs(context.Background(), slog.LevelWarn, "sequence number mismatch",
+			slog.Int("expected", int(d.seqNumber)), slog.Int("got", int(seqNumber)))
+		d.seqNumber = (seqNumber + 1) & 0xFF
+		return dst, fmt.Errorf("clearcodec: sequence number mismatch (expected %d, got %d)", d.seqNumber-1, seqNumber)
 	}
 	d.seqNumber = (seqNumber + 1) & 0xFF
 
@@ -118,15 +121,15 @@ func (d *Decoder) Decompress(dst []byte, width, height int, src []byte) ([]byte,
 		if glyphFlags&flagGlyphIndex == 0 {
 			return dst, errBadGlyphFlags
 		}
-		if int(glyphIndex) < glyphCacheSize {
-			g := &d.glyphCache[glyphIndex]
-			if g.data != nil {
-				copy(dst, g.data)
-				d.log.LogAttrs(context.Background(), slog.LevelDebug, "glyph hit", slog.Int("idx", int(glyphIndex)), slog.Int("width", int(g.width)), slog.Int("height", int(g.height)))
-			} else {
-				d.log.LogAttrs(context.Background(), slog.LevelWarn, "glyph hit but data is nil", slog.Int("idx", int(glyphIndex)))
-			}
+		if int(glyphIndex) >= glyphCacheSize {
+			return dst, fmt.Errorf("clearcodec: glyph index %d out of range", glyphIndex)
 		}
+		g := &d.glyphCache[glyphIndex]
+		if g.data == nil {
+			return dst, fmt.Errorf("clearcodec: glyph cache miss at index %d", glyphIndex)
+		}
+		copy(dst, g.data)
+		d.log.LogAttrs(context.Background(), slog.LevelDebug, "glyph hit", slog.Int("idx", int(glyphIndex)), slog.Int("width", int(g.width)), slog.Int("height", int(g.height)))
 		return dst, nil
 	}
 
@@ -396,6 +399,10 @@ func (d *Decoder) decodeBands(dst []byte, dstWidth, dstHeight int, src []byte) e
 				continue
 			}
 			count := vBarHeight
+			if vbar.count != vBarHeight {
+				d.log.LogAttrs(context.Background(), slog.LevelWarn, "vbar count mismatch",
+					slog.Int("vbarCount", vbar.count), slog.Int("vBarHeight", vBarHeight))
+			}
 			if vbar.count < count {
 				count = vbar.count
 			}
@@ -491,9 +498,13 @@ func (d *Decoder) decodeSubcodec(dst []byte, dstWidth int, src []byte) error {
 		case 0: // Raw BGR24
 			d.decodeRawBGR(dst, dstStride, x, y, w, h, rectData)
 		case 1: // NSCodec
-			d.decodeNSCodec(dst, dstStride, x, y, w, h, rectData)
+			if err := d.decodeNSCodec(dst, dstStride, x, y, w, h, rectData); err != nil {
+				return err
+			}
 		case 2: // RLEX
-			d.decodeRLEX(dst, dstStride, x, y, w, h, rectData)
+			if err := d.decodeRLEX(dst, dstStride, x, y, w, h, rectData); err != nil {
+				return err
+			}
 		default:
 			// Unknown subcodec
 		}
@@ -524,11 +535,11 @@ func (d *Decoder) decodeRawBGR(dst []byte, dstStride, x, y, w, h int, src []byte
 // decodeNSCodec decodes an NSCodec-compressed subrect and writes it to the output buffer.
 // No row flip — NSCodec output within ClearCodec
 // is already top-down, matching ClearCodec's output format.
-func (d *Decoder) decodeNSCodec(dst []byte, dstStride, x, y, w, h int, src []byte) {
+func (d *Decoder) decodeNSCodec(dst []byte, dstStride, x, y, w, h int, src []byte) error {
 	var err error
 	d.nscBuf, d.nscPlanesBuf, err = nscodec.Decompress(d.nscBuf[:0], d.nscPlanesBuf, w, h, src, d.log)
 	if err != nil {
-		return
+		return fmt.Errorf("clearcodec: NSCodec subcodec: %w", err)
 	}
 	srcStride := w * 4
 	for row := 0; row < h; row++ {
@@ -538,6 +549,7 @@ func (d *Decoder) decodeNSCodec(dst []byte, dstStride, x, y, w, h int, src []byt
 			copy(dst[dstOff:dstOff+srcStride], d.nscBuf[srcOff:srcOff+srcStride])
 		}
 	}
+	return nil
 }
 
 // RLEX bit masks for extracting stopIndex from packed byte.
@@ -559,21 +571,21 @@ func init() {
 
 // decodeRLEX decodes RLEX-compressed data (palette + suite sweep run-length encoding).
 // Decodes RLEX-compressed subcodec data (MS-RDPEGFX 2.2.4.1.3).
-func (d *Decoder) decodeRLEX(dst []byte, dstStride, rectX, rectY, rectW, rectH int, src []byte) {
+func (d *Decoder) decodeRLEX(dst []byte, dstStride, rectX, rectY, rectW, rectH int, src []byte) error {
 	if len(src) < 1 {
-		return
+		return fmt.Errorf("clearcodec: RLEX data empty")
 	}
 
 	paletteCount := int(src[0])
 	si := 1
 
 	if paletteCount < 1 || paletteCount > 127 {
-		return
+		return fmt.Errorf("clearcodec: RLEX paletteCount %d out of range [1,127]", paletteCount)
 	}
 
 	// Read palette (BGR on wire → RGBA output order)
 	if si+paletteCount*3 > len(src) {
-		return
+		return errTruncated
 	}
 	type color struct{ r, g, b byte }
 	palette := make([]color, paletteCount)
@@ -592,7 +604,7 @@ func (d *Decoder) decodeRLEX(dst []byte, dstStride, rectX, rectY, rectW, rectH i
 	for si < len(src) && pixelIndex < totalPixels {
 		// Read 2 bytes per entry: packed tmp + runLengthFactor
 		if si+2 > len(src) {
-			return
+			return errTruncated
 		}
 		tmp := src[si]
 		runLengthFactor := uint32(src[si+1])
@@ -606,13 +618,13 @@ func (d *Decoder) decodeRLEX(dst []byte, dstStride, rectX, rectY, rectW, rectH i
 		// Cascading run length factor (replace semantics, same as residual)
 		if runLengthFactor >= 0xFF {
 			if si+2 > len(src) {
-				return
+				return errTruncated
 			}
 			runLengthFactor = uint32(binary.LittleEndian.Uint16(src[si : si+2]))
 			si += 2
 			if runLengthFactor >= 0xFFFF {
 				if si+4 > len(src) {
-					return
+					return errTruncated
 				}
 				runLengthFactor = binary.LittleEndian.Uint32(src[si : si+4])
 				si += 4
@@ -620,14 +632,14 @@ func (d *Decoder) decodeRLEX(dst []byte, dstStride, rectX, rectY, rectW, rectH i
 		}
 
 		if startIndex < 0 || startIndex >= paletteCount || stopIndex >= paletteCount {
-			return
+			return fmt.Errorf("clearcodec: RLEX palette index out of range (start=%d stop=%d count=%d)", startIndex, stopIndex, paletteCount)
 		}
 
 		// Paint runLengthFactor pixels at palette[startIndex]
 		c := palette[startIndex]
 		rlf := int(runLengthFactor)
 		if pixelIndex+rlf > totalPixels {
-			return
+			return errOverflow
 		}
 		for i := 0; i < rlf; i++ {
 			dstOff := (rectY+y)*dstStride + (rectX+x)*4
@@ -648,12 +660,12 @@ func (d *Decoder) decodeRLEX(dst []byte, dstStride, rectX, rectY, rectW, rectH i
 		// Suite sweep: paint suiteDepth+1 pixels sweeping palette[startIndex..stopIndex]
 		suiteLen := suiteDepth + 1
 		if pixelIndex+suiteLen > totalPixels {
-			return
+			return errOverflow
 		}
 		suiteIdx := startIndex
 		for i := 0; i < suiteLen; i++ {
 			if suiteIdx >= paletteCount {
-				return
+				return fmt.Errorf("clearcodec: RLEX suite index %d out of range (count=%d)", suiteIdx, paletteCount)
 			}
 			sc := palette[suiteIdx]
 			suiteIdx++
@@ -672,6 +684,7 @@ func (d *Decoder) decodeRLEX(dst []byte, dstStride, rectX, rectY, rectW, rectH i
 		}
 		pixelIndex += suiteLen
 	}
+	return nil
 }
 
 // Error sentinels

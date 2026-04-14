@@ -8,7 +8,7 @@ import (
 	"runtime"
 	"sync"
 
-	"github.com/bouncyball-git/gopher-rdp/util"
+	"gopher-rdp/sloghex"
 )
 
 // tilePixelPool pools 64x64 RGBA pixel buffers (16384 bytes each) for decoded tiles.
@@ -409,7 +409,7 @@ func (d *Decoder) decodeRegion(data []byte, contextID uint32) (Region, error) {
 			})
 		default:
 			d.log.LogAttrs(context.Background(), slog.LevelWarn, "unknown tile type",
-				util.Hex4("type", pt.tileType))
+				sloghex.Hex4("type", pt.tileType))
 		}
 	}
 
@@ -1183,12 +1183,13 @@ func differentialDecode(coeffs []int16, n int) {
 // dequantize. The encoder right-shifts by (quant + progQuant - 6), leaving
 // a net scale factor of 2^5 = 32. We compensate by adding 4096
 // (= 128 << 5) to Y and right-shifting by 5 after the ICT multiply.
-// ICT coefficients are scaled by 2^14:
+// ICT coefficients are scaled by 2^16 (matching FreeRDP prim_colors.c
+// row 16: {91916, 46819, 22527, 115992}):
 //
-//	Cr_R  = 22986  (1.402 * 2^14)
-//	Cb_G  =  5636  (0.344136 * 2^14)
-//	Cr_G  = 11698  (0.714136 * 2^14)
-//	Cb_B  = 29032  (1.772 * 2^14)
+//	Cr_R  = 91916  (1.402525 * 2^16)
+//	Cr_G  = 46819  (0.714401 * 2^16)
+//	Cb_G  = 22527  (0.343730 * 2^16)
+//	Cb_B  = 115992 (1.769905 * 2^16)
 func ycbcrToRGBA(out []byte, y, cb, cr []int16) {
 	const n = tileSize * tileSize // 4096, divisible by 4
 	// BCE hints: prove all indices are in-bounds
@@ -1198,34 +1199,34 @@ func ycbcrToRGBA(out []byte, y, cb, cr []int16) {
 	_ = cr[n-1]
 
 	for i := 0; i < n; i += 4 {
-		yy0 := (int32(y[i]) + 4096) << 14
+		yy0 := (int32(y[i]) + 4096) << 16
 		cb0 := int32(cb[i])
 		cr0 := int32(cr[i])
-		yy1 := (int32(y[i+1]) + 4096) << 14
+		yy1 := (int32(y[i+1]) + 4096) << 16
 		cb1 := int32(cb[i+1])
 		cr1 := int32(cr[i+1])
-		yy2 := (int32(y[i+2]) + 4096) << 14
+		yy2 := (int32(y[i+2]) + 4096) << 16
 		cb2 := int32(cb[i+2])
 		cr2 := int32(cr[i+2])
-		yy3 := (int32(y[i+3]) + 4096) << 14
+		yy3 := (int32(y[i+3]) + 4096) << 16
 		cb3 := int32(cb[i+3])
 		cr3 := int32(cr[i+3])
 
-		out[i*4] = clampByte((yy0 + cr0*22986) >> 19)
-		out[i*4+1] = clampByte((yy0 - cb0*5636 - cr0*11698) >> 19)
-		out[i*4+2] = clampByte((yy0 + cb0*29032) >> 19)
+		out[i*4] = clampByte((yy0 + cr0*91916) >> 21)
+		out[i*4+1] = clampByte((yy0 - cb0*22527 - cr0*46819) >> 21)
+		out[i*4+2] = clampByte((yy0 + cb0*115992) >> 21)
 		out[i*4+3] = 0xFF
-		out[i*4+4] = clampByte((yy1 + cr1*22986) >> 19)
-		out[i*4+5] = clampByte((yy1 - cb1*5636 - cr1*11698) >> 19)
-		out[i*4+6] = clampByte((yy1 + cb1*29032) >> 19)
+		out[i*4+4] = clampByte((yy1 + cr1*91916) >> 21)
+		out[i*4+5] = clampByte((yy1 - cb1*22527 - cr1*46819) >> 21)
+		out[i*4+6] = clampByte((yy1 + cb1*115992) >> 21)
 		out[i*4+7] = 0xFF
-		out[i*4+8] = clampByte((yy2 + cr2*22986) >> 19)
-		out[i*4+9] = clampByte((yy2 - cb2*5636 - cr2*11698) >> 19)
-		out[i*4+10] = clampByte((yy2 + cb2*29032) >> 19)
+		out[i*4+8] = clampByte((yy2 + cr2*91916) >> 21)
+		out[i*4+9] = clampByte((yy2 - cb2*22527 - cr2*46819) >> 21)
+		out[i*4+10] = clampByte((yy2 + cb2*115992) >> 21)
 		out[i*4+11] = 0xFF
-		out[i*4+12] = clampByte((yy3 + cr3*22986) >> 19)
-		out[i*4+13] = clampByte((yy3 - cb3*5636 - cr3*11698) >> 19)
-		out[i*4+14] = clampByte((yy3 + cb3*29032) >> 19)
+		out[i*4+12] = clampByte((yy3 + cr3*91916) >> 21)
+		out[i*4+13] = clampByte((yy3 - cb3*22527 - cr3*46819) >> 21)
+		out[i*4+14] = clampByte((yy3 + cb3*115992) >> 21)
 		out[i*4+15] = 0xFF
 	}
 }
