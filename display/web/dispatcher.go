@@ -845,6 +845,10 @@ func (d *Dispatcher) runSession(s *monitorSession, monIdx int) {
 			if err := client.SendAudioInput(pcm); err != nil {
 				d.log.Debug("SendAudioInput error", "error", err)
 			}
+		case 0x0D: // JS log
+			if len(payload) > 1 {
+				d.log.Info("JS: " + string(payload[1:]))
+			}
 		default:
 			d.log.Warn("unknown input type", "type", payload[0])
 		}

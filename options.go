@@ -39,6 +39,8 @@ type Options struct {
 	DeviceScaleFactor  uint32 // Device scale (100, 140, or 180, 0 = don't send)
 	GFX                bool   // Enable RDPGFX graphics pipeline (EGFX)
 	NoAVC              bool   // Disable H.264/AVC codec (force RemoteFX/ClearCodec)
+	NoDPR              bool   // SDL: don't scale RDP resolution to physical pixels
+	NoBilinear         bool   // SDL: use nearest-neighbor instead of bilinear texture scaling
 
 	// Experience (visual effects)
 	Wallpaper           bool // Show desktop wallpaper

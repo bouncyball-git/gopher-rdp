@@ -638,6 +638,8 @@ func main() {
 	deviceScale := flag.Int("device-scale", 0, "Device scale factor (100, 140, or 180)")
 	noGfx := flag.Bool("no-gfx", false, "Disable RDPGFX graphics pipeline (EGFX)")
 	noAvc := flag.Bool("no-avc", false, "Disable H.264/AVC codec in EGFX (force RemoteFX/ClearCodec)")
+	noDPR := flag.Bool("no-dpr", false, "SDL: don't scale RDP resolution to physical pixels (match web behavior)")
+	noBilinear := flag.Bool("no-bilinear", false, "Use nearest-neighbor scaling instead of bilinear (all viewers)")
 	keyboard := flag.String("keyboard", "scancode", "Keyboard input mode: scancode or unicode")
 	var guiFlag optionalString
 	flag.Var(&guiFlag, "gui", "Graphical desktop viewer (optional: -gui WxH, e.g. -gui 1920x1080)")
@@ -674,6 +676,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  -desktop-scale int       DPI zoom percent, 100-500 (default 0 = off)\n")
 		fmt.Fprintf(os.Stderr, "  -device-scale int        Physical DPI tier: 100=standard, 140=high, 180=very high\n")
 		fmt.Fprintf(os.Stderr, "                           (used with -desktop-scale for server-side UI scaling)\n")
+		fmt.Fprintf(os.Stderr, "  -no-dpr                  SDL: don't scale RDP to physical pixels (match web behavior)\n")
 		fmt.Fprintf(os.Stderr, "  -no-gfx                  Disable RDPGFX graphics pipeline (EGFX)\n")
 		fmt.Fprintf(os.Stderr, "  -no-avc                  Disable H.264/AVC codec (force RemoteFX/ClearCodec)\n")
 		fmt.Fprintf(os.Stderr, "  -keyboard string         Keyboard input mode: scancode or unicode (default scancode)\n")
@@ -1009,6 +1012,8 @@ func main() {
 		DesktopComposition:   *desktopComp,
 		GFX:                  !*noGfx,
 		NoAVC:                *noAvc,
+		NoDPR:                *noDPR,
+		NoBilinear:           *noBilinear,
 		Camera:               *camera,
 		KeyboardMode:         kbMode,
 		HeartbeatTimeout:     time.Duration(*heartbeat) * time.Second,

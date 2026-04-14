@@ -6,7 +6,7 @@
 <style>
   * { margin: 0; padding: 0; }
   body { background: #1a1a2e; overflow: auto; }
-  canvas { cursor: default; image-rendering: pixelated; display: block; }
+  canvas { cursor: default; display: block; }
   #overlay { position: fixed; inset: 0; background: #000; color: #cc7000; font: bold 48px sans-serif; z-index: 20; display: flex; flex-direction: column; justify-content: center; align-items: center; }
   #mic-indicator { position: fixed; top: 8px; right: 8px; width: 12px; height: 12px; border-radius: 50%; background: #e00; z-index: 30; display: none; box-shadow: 0 0 6px #e00; }
   #overlay.hidden { display: none; }
@@ -20,28 +20,105 @@
 <canvas id="screen"></canvas>
 <script>
 (function() {
-  var dpr = window.devicePixelRatio || 1;
   var params = new URLSearchParams(location.search);
-  // Use URL params if present, otherwise detect browser viewport in physical pixels
+  // Scale by devicePixelRatio so the canvas matches physical pixels.
+  // Firefox and Chrome report fractional DPR correctly. The canvas pixel
+  // buffer is at physical resolution; CSS display size stays at logical.
+  // WebGL GL_NEAREST/GL_LINEAR handles the downscale to CSS size.
+  // With -no-dpr (?nodpr=1), skip DPR — canvas = logical, compositor upscales.
+  //
+  // dpr is re-read on every window.resize tick so that dragging the browser
+  // window between monitors with different DPRs picks up the new value and
+  // re-sizes the RDP session accordingly. Real browsers report
+  // devicePixelRatio honestly (including fractional scales) and fire a
+  // resize event on cross-monitor moves, so no matchMedia listener is
+  // required the way WebKitGTK needs in web2.
+  var noDPR = params.get("nodpr") === "1";
+  var dpr = noDPR ? 1 : (window.devicePixelRatio || 1);
   var W = parseInt(params.get("w")) || Math.round(window.innerWidth * dpr);
   var H = parseInt(params.get("h")) || Math.round(window.innerHeight * dpr);
 
   var canvas = document.getElementById("screen");
-  var ctx = canvas.getContext("2d");
   var overlay = document.getElementById("overlay");
   var overlayText = document.getElementById("overlay-text");
   var spinner = document.getElementById("spinner");
-  // Set canvas pixel buffer to match RDP resolution
   canvas.width = W;
   canvas.height = H;
-
-  // Scale CSS display size so 1 canvas pixel = 1 physical pixel (HiDPI fix)
   canvas.style.width = (W / dpr) + "px";
   canvas.style.height = (H / dpr) + "px";
 
-  // Fill black initially
-  ctx.fillStyle = "#000";
-  ctx.fillRect(0, 0, W, H);
+  // WebGL rendering — GPU texture + fullscreen quad for hardware-quality filtering.
+  // Falls back to Canvas 2D if WebGL is unavailable.
+  var gl = null, glTex = null, ctx = null, glNeedsRedraw = false, glFilter = 0;
+  // Offscreen 2D canvas for H.264 VideoFrame → pixel extraction
+  var h264Canvas = null, h264Ctx = null;
+
+  (function initRenderer() {
+    gl = canvas.getContext("webgl2", {antialias: false, alpha: false});
+    if (!gl) gl = canvas.getContext("webgl", {antialias: false, alpha: false});
+    if (!gl) {
+      ctx = canvas.getContext("2d");
+      if (params.get("nearest") === "1") canvas.style.imageRendering = "pixelated";
+      console.log("canvas: using Canvas 2D fallback");
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, W, H);
+      return;
+    }
+    console.log("canvas: using WebGL (" + gl.getParameter(gl.VERSION) + ")");
+    var vs = gl.createShader(gl.VERTEX_SHADER);
+    gl.shaderSource(vs,
+      "attribute vec2 a_pos;" +
+      "varying vec2 v_uv;" +
+      "void main(){v_uv=a_pos*0.5+0.5;v_uv.y=1.0-v_uv.y;gl_Position=vec4(a_pos,0.0,1.0);}");
+    gl.compileShader(vs);
+    var fs = gl.createShader(gl.FRAGMENT_SHADER);
+    gl.shaderSource(fs,
+      "precision mediump float;" +
+      "varying vec2 v_uv;" +
+      "uniform sampler2D u_tex;" +
+      "void main(){gl_FragColor=texture2D(u_tex,v_uv);}");
+    gl.compileShader(fs);
+    var prog = gl.createProgram();
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    gl.linkProgram(prog);
+    gl.useProgram(prog);
+    var buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1,1,-1,-1,1,1,1]), gl.STATIC_DRAW);
+    var aPos = gl.getAttribLocation(prog, "a_pos");
+    gl.enableVertexAttribArray(aPos);
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+    glFilter = params.get("nearest") === "1" ? gl.NEAREST : gl.LINEAR;
+    glTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, glTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, glFilter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, glFilter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.viewport(0, 0, W, H);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  })();
+
+  function glPutTile(x, y, w, h, rgba) {
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, w, h, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+    glNeedsRedraw = true;
+  }
+  function glFlush() {
+    if (glNeedsRedraw) {
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      glNeedsRedraw = false;
+    }
+  }
+  function glResize(w, h) {
+    gl.viewport(0, 0, w, h);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+  }
 
   // Cursor cache: index → {url, hotX, hotY}
   var cursorCache = {};
@@ -501,9 +578,18 @@
   var hasWebCodecs = typeof VideoDecoder !== "undefined";
   var avcParam = hasWebCodecs ? "&avc=1" : "";
 
-  // Connect WebSocket, passing physical resolution for RDP auto-sizing
+  // Forward DPI scale params from page URL to WebSocket URL so the server
+  // can apply MS-RDPBCGR Client Core Data desktopScaleFactor/deviceScaleFactor
+  // before negotiating the RDP session.
+  var scaleParam = "";
+  var s = params.get("scale");
+  if (s) scaleParam += "&scale=" + encodeURIComponent(s);
+  var ds = params.get("devscale");
+  if (ds) scaleParam += "&devscale=" + encodeURIComponent(ds);
+
+  // Connect WebSocket, passing resolution for RDP auto-sizing
   var proto = location.protocol === "https:" ? "wss:" : "ws:";
-  var ws = new WebSocket(proto + "//" + location.host + "/ws?w=" + W + "&h=" + H + "&monitor=" + (monIdx || "0") + avcParam);
+  var ws = new WebSocket(proto + "//" + location.host + "/ws?w=" + W + "&h=" + H + "&monitor=" + (monIdx || "0") + avcParam + scaleParam);
   ws.binaryType = "arraybuffer";
 
   // H.264 decoder state
@@ -531,16 +617,41 @@
     // same position on the canvas. No offset translation needed.
     var fw = frame.displayWidth;
     var fh = frame.displayHeight;
-    for (var i = 0; i < regions.length; i++) {
-      var r = regions[i];
-      var rw = r.right - r.left;
-      var rh = r.bottom - r.top;
-      if (r.left + rw > fw) rw = fw - r.left;
-      if (r.top + rh > fh) rh = fh - r.top;
-      if (rw > 0 && rh > 0) {
-        ctx.drawImage(frame,
-          r.left, r.top, rw, rh,
-          r.left, r.top, rw, rh);
+    if (gl) {
+      // Extract VideoFrame pixels via offscreen 2D canvas, then upload to GL.
+      if (!h264Canvas) {
+        h264Canvas = document.createElement("canvas");
+        h264Ctx = h264Canvas.getContext("2d");
+      }
+      if (h264Canvas.width !== fw || h264Canvas.height !== fh) {
+        h264Canvas.width = fw;
+        h264Canvas.height = fh;
+      }
+      h264Ctx.drawImage(frame, 0, 0);
+      for (var i = 0; i < regions.length; i++) {
+        var r = regions[i];
+        var rw = r.right - r.left;
+        var rh = r.bottom - r.top;
+        if (r.left + rw > fw) rw = fw - r.left;
+        if (r.top + rh > fh) rh = fh - r.top;
+        if (rw > 0 && rh > 0) {
+          var px = h264Ctx.getImageData(r.left, r.top, rw, rh);
+          glPutTile(r.left, r.top, rw, rh, new Uint8Array(px.data.buffer));
+        }
+      }
+      glFlush();
+    } else {
+      for (var i = 0; i < regions.length; i++) {
+        var r = regions[i];
+        var rw = r.right - r.left;
+        var rh = r.bottom - r.top;
+        if (r.left + rw > fw) rw = fw - r.left;
+        if (r.top + rh > fh) rh = fh - r.top;
+        if (rw > 0 && rh > 0) {
+          ctx.drawImage(frame,
+            r.left, r.top, rw, rh,
+            r.left, r.top, rw, rh);
+        }
       }
     }
     frame.close();
@@ -615,6 +726,16 @@
 
   ws.onopen = function() {
     overlay.classList.add("hidden");
+    // Log renderer type to server
+    var rendererMsg = gl
+      ? "canvas: using WebGL (" + gl.getParameter(gl.VERSION) + ") filter=" + (glFilter === gl.NEAREST ? "NEAREST" : "LINEAR")
+      : "canvas: using Canvas 2D fallback";
+    var enc = new TextEncoder();
+    var txt = enc.encode(rendererMsg);
+    var logBuf = new Uint8Array(1 + txt.length);
+    logBuf[0] = 0x0D;
+    logBuf.set(txt, 1);
+    ws.send(logBuf);
   };
 
   ws.onclose = function() {
@@ -643,10 +764,15 @@
         var size = w * h * 4;
         if (off + 9 + size > buf.length) break;
         var rgba = buf.subarray(off+9, off+9+size);
-        var img = new ImageData(new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, size), w, h);
-        ctx.putImageData(img, x, y);
+        if (gl) {
+          glPutTile(x, y, w, h, rgba);
+        } else {
+          var img = new ImageData(new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, size), w, h);
+          ctx.putImageData(img, x, y);
+        }
         off += 9 + size;
       }
+      if (gl) glFlush();
     } else if (msgType === 0x03) {
       // Disconnect notification from server
       showOverlay("Disconnected");
@@ -663,8 +789,12 @@
       canvas.height = H;
       canvas.style.width = (W / dpr) + "px";
       canvas.style.height = (H / dpr) + "px";
-      ctx.fillStyle = "#000";
-      ctx.fillRect(0, 0, W, H);
+      if (gl) {
+        glResize(W, H);
+      } else {
+        ctx.fillStyle = "#000";
+        ctx.fillRect(0, 0, W, H);
+      }
       // Reset H.264 decoder on resize (ResetGraphics)
       resetH264Decoder();
       return;
@@ -695,7 +825,6 @@
         var cdata = buf.subarray(12);
         if (cdata.length < cw * ch * 4) return;
 
-        // Scale hotspot by DPR for CSS cursor positioning
         var cssHotX = Math.round(hotX / dpr);
         var cssHotY = Math.round(hotY / dpr);
 
@@ -1162,11 +1291,15 @@
 
   canvas.addEventListener("contextmenu", function(e) { e.preventDefault(); });
 
-  // Dynamic resize: detect window resize with 200ms debounce
+  // Dynamic resize: detect window resize with 200ms debounce. The dpr
+  // variable is refreshed from window.devicePixelRatio at the top of the
+  // callback so cross-monitor drags pick up the new scale factor before
+  // computing the new RDP framebuffer size.
   var resizeTimer = null;
   window.addEventListener("resize", function() {
     if (resizeTimer) clearTimeout(resizeTimer);
     resizeTimer = setTimeout(function() {
+      dpr = noDPR ? 1 : (window.devicePixelRatio || 1);
       var newW = Math.round(window.innerWidth * dpr);
       var newH = Math.round(window.innerHeight * dpr);
       if (newW === W && newH === H) return;

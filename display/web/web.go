@@ -120,7 +120,14 @@ func NewAutoWebHandler(opts *rdp.Options) (http.Handler, <-chan struct{}) {
 			if opts.AudioOut != nil {
 				abuf = opts.AudioOut.BufMs
 			}
-			http.Redirect(w, r, fmt.Sprintf("/?kb=%s&abuf=%d", kb, abuf), http.StatusFound)
+			url := fmt.Sprintf("/?kb=%s&abuf=%d", kb, abuf)
+			if opts.NoBilinear {
+				url += "&nearest=1"
+			}
+			if opts.NoDPR {
+				url += "&nodpr=1"
+			}
+			http.Redirect(w, r, url, http.StatusFound)
 			return
 		}
 		data, _ := indexHTML.ReadFile("index.html")
@@ -139,12 +146,30 @@ func NewAutoWebHandler(opts *rdp.Options) (http.Handler, <-chan struct{}) {
 			bw, bh = int(opts.Width), int(opts.Height)
 		}
 
+		// Optional DPI scaling (MS-RDPBCGR Client Core Data desktopScaleFactor /
+		// deviceScaleFactor). When ?scale=N is present, override opts so the
+		// initial RDP connection negotiates the requested DPI. Validation against
+		// the allowed value list is performed by rdp.NewClient().
+		scaleStr := r.URL.Query().Get("scale")
+		devScaleStr := r.URL.Query().Get("devscale")
+
 		clientMu.Lock()
 		if client == nil && clientErr == nil {
 			// First connection — connect RDP at browser resolution
 			opts.Width = uint16(bw)
 			opts.Height = uint16(bh)
-			log.Debug("browser resolution, connecting RDP", "width", bw, "height", bh)
+			if scaleStr != "" {
+				if v, err := strconv.Atoi(scaleStr); err == nil && v > 0 {
+					opts.DesktopScaleFactor = uint32(v)
+				}
+			}
+			if devScaleStr != "" {
+				if v, err := strconv.Atoi(devScaleStr); err == nil && v > 0 {
+					opts.DeviceScaleFactor = uint32(v)
+				}
+			}
+			log.Debug("browser resolution, connecting RDP", "width", bw, "height", bh,
+				"desktopScale", opts.DesktopScaleFactor, "deviceScale", opts.DeviceScaleFactor)
 			c, err := rdp.NewClient(opts)
 			if err != nil {
 				clientErr = err
@@ -749,6 +774,11 @@ func handleWS(w http.ResponseWriter, r *http.Request, client *rdp.Client, log *s
 				continue
 			}
 			client.SendCameraSample(payload[1:])
+
+		case 0x0D: // JS log: [0x0D][utf8 text...]
+			if len(payload) > 1 {
+				log.Info("JS: " + string(payload[1:]))
+			}
 
 		default:
 			log.Warn("unknown input type", "type", fmt.Sprintf("0x%02X", payload[0]))
