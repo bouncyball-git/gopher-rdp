@@ -677,6 +677,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  -device-scale int        Physical DPI tier: 100=standard, 140=high, 180=very high\n")
 		fmt.Fprintf(os.Stderr, "                           (used with -desktop-scale for server-side UI scaling)\n")
 		fmt.Fprintf(os.Stderr, "  -no-dpr                  SDL: don't scale RDP to physical pixels (match web behavior)\n")
+		fmt.Fprintf(os.Stderr, "  -no-bilinear             Use nearest-neighbor scaling instead of bilinear (all viewers)\n")
 		fmt.Fprintf(os.Stderr, "  -no-gfx                  Disable RDPGFX graphics pipeline (EGFX)\n")
 		fmt.Fprintf(os.Stderr, "  -no-avc                  Disable H.264/AVC codec (force RemoteFX/ClearCodec)\n")
 		fmt.Fprintf(os.Stderr, "  -keyboard string         Keyboard input mode: scancode or unicode (default scancode)\n")

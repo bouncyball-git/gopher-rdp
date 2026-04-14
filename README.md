@@ -131,7 +131,7 @@ go build -o gopher-rdp ./client
 | Headless | *(default)* | No display output, callbacks only |
 | GUI | `-gui` | Desktop viewer using [Ebiten](https://ebitengine.org/) with keyboard/mouse input and audio playback |
 | GUI multi-display | `-gui -display N[,P]` | One Ebiten window per monitor, broker-spawned child processes |
-| Web | `-web <port>` | HTTP server with embedded HTML/JS, WebSocket transport for bitmaps, cursor, clipboard, audio, and microphone |
+| Web | `-web <port>` | HTTP server with WebGL rendering (Canvas 2D fallback), WebSocket transport for bitmaps, cursor, clipboard, audio, and microphone. DPR-aware scaling with bilinear/nearest-neighbor filtering |
 | Web multi-display | `-web <port> -display N[,P]` | Each browser tab is a separate monitor; resolution auto-detected |
 
 ## Library API
@@ -258,6 +258,8 @@ opts.USBDevices = []rdp.USBRedirect{
 | `DesktopComposition` | `bool` | false | Desktop composition (Aero Glass) |
 | `GFX` | `bool` | false | Enable RDPGFX graphics pipeline (CLI enables by default) |
 | `NoAVC` | `bool` | false | Disable H.264/AVC codec (force RemoteFX/ClearCodec) |
+| `NoDPR` | `bool` | false | Don't scale RDP resolution to physical pixels |
+| `NoBilinear` | `bool` | false | Use nearest-neighbor scaling instead of bilinear |
 | `KeyboardMode` | `KeyboardMode` | `KeyboardScancode` | Keyboard input mode (scancode or unicode) |
 | `HeartbeatTimeout` | `time.Duration` | 10s | Max time without server data before disconnect (0 = off) |
 | `AutoReconnect` | `bool` | false | Auto-reconnect on disconnect |
@@ -554,6 +556,8 @@ var (
 | `-device-scale` | 0 | Physical DPI tier (100, 140, or 180) |
 | `-no-gfx` | false | Disable RDPGFX graphics pipeline (EGFX) |
 | `-no-avc` | false | Disable H.264/AVC codec (force RemoteFX/ClearCodec) |
+| `-no-dpr` | false | Don't scale RDP resolution to physical pixels (match web behavior) |
+| `-no-bilinear` | false | Use nearest-neighbor scaling instead of bilinear (all viewers) |
 | `-keyboard` | scancode | Keyboard input mode: `scancode` (remote layout) or `unicode` (local layout) |
 | `-gui [WxH]` | | Graphical desktop viewer (default 1600x900) |
 | `-web [port]` | 8080 | Web viewer (default port 8080) |
