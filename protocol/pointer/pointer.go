@@ -151,7 +151,10 @@ func decodeColorFields(log *slog.Logger, buf, data []byte, xorBpp int, large boo
 //
 // AND=0 → opaque (alpha 0xFF).
 // AND=1 + XOR=black → transparent (alpha 0x00).
-// AND=1 + XOR=white → XOR (render as semi-transparent checkerboard).
+// AND=1 + XOR=non-black → XOR-invert pixel. CSS cursors can't XOR with the
+// screen, so we render these as opaque black and then paint a 1-pixel white
+// halo into surrounding transparent pixels. This keeps cursors like the
+// Windows I-beam visible on both light and dark backgrounds.
 // 32bpp special: when AND=0 and XOR alpha != 0, use XOR alpha directly.
 func convertMasksToRGBA(buf []byte, w, h, bpp int, xorMask, andMask []byte) (rgba []byte, outBuf []byte) {
 	needed := w * h * 4
@@ -159,6 +162,10 @@ func convertMasksToRGBA(buf []byte, w, h, bpp int, xorMask, andMask []byte) (rgb
 		buf = make([]byte, needed)
 	}
 	rgba = buf[:needed]
+
+	// Track XOR-invert pixel positions so the halo pass can distinguish them
+	// from legitimate opaque-black cursor pixels (e.g. the arrow outline).
+	invertMask := make([]bool, w*h)
 
 	// AND mask stride: 1bpp, rows 2-byte aligned
 	andStride := ((w + 7) / 8)
@@ -232,23 +239,26 @@ func convertMasksToRGBA(buf []byte, w, h, bpp int, xorMask, andMask []byte) (rgb
 				} else if r == 0 && g == 0 && b == 0 {
 					a = 0
 				} else {
-					// XOR pixel (typically white) — semi-transparent checkerboard
-					a = 0x80
+					// XOR-invert pixel → opaque black, halo pass adds the white outline
+					r, g, b, a = 0, 0, 0, 0xFF
+					invertMask[y*w+x] = true
 				}
 			case bpp == 16 && xorRow != nil && x*2+1 < len(xorRow):
 				pixel := uint16(xorRow[x*2]) | uint16(xorRow[x*2+1])<<8
-				r5 := byte((pixel >> 11) & 0x1F)
-				g6 := byte((pixel >> 5) & 0x3F)
-				b5 := byte(pixel & 0x1F)
-				r = (r5 << 3) | (r5 >> 2)
-				g = (g6 << 2) | (g6 >> 4)
-				b = (b5 << 3) | (b5 >> 2)
 				if andBit == 0 {
+					r5 := byte((pixel >> 11) & 0x1F)
+					g6 := byte((pixel >> 5) & 0x3F)
+					b5 := byte(pixel & 0x1F)
+					r = (r5 << 3) | (r5 >> 2)
+					g = (g6 << 2) | (g6 >> 4)
+					b = (b5 << 3) | (b5 >> 2)
 					a = 0xFF
 				} else if pixel == 0 {
 					a = 0
 				} else {
-					a = 0x80
+					// XOR-invert pixel → opaque black, halo pass adds the white outline
+					r, g, b, a = 0, 0, 0, 0xFF
+					invertMask[y*w+x] = true
 				}
 			case bpp == 1:
 				// Monochrome: XOR is 1bpp
@@ -266,7 +276,9 @@ func convertMasksToRGBA(buf []byte, w, h, bpp int, xorMask, andMask []byte) (rgb
 					if xorBit == 0 {
 						a = 0 // transparent
 					} else {
-						r, g, b, a = 0xFF, 0xFF, 0xFF, 0x80 // XOR: semi-transparent
+						// XOR-invert pixel → opaque black, halo pass adds the white outline
+						r, g, b, a = 0, 0, 0, 0xFF
+						invertMask[y*w+x] = true
 					}
 				}
 			default:
@@ -280,6 +292,52 @@ func convertMasksToRGBA(buf []byte, w, h, bpp int, xorMask, andMask []byte) (rgb
 			rgba[di+3] = a
 		}
 	}
+
+	// Halo pass: paint a 1-pixel opaque-white outline into transparent pixels
+	// adjacent to any XOR-invert pixel. This makes the cursor visible on both
+	// light and dark backgrounds (real XOR-with-screen isn't possible for a
+	// static CSS cursor image).
+	hasInvert := false
+	for _, v := range invertMask {
+		if v {
+			hasInvert = true
+			break
+		}
+	}
+	if hasInvert {
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				di := (y*w + x) * 4
+				if rgba[di+3] != 0 {
+					continue // already opaque — don't overwrite cursor content
+				}
+				neighbor := false
+			neighbors:
+				for dy := -1; dy <= 1; dy++ {
+					for dx := -1; dx <= 1; dx++ {
+						if dx == 0 && dy == 0 {
+							continue
+						}
+						ny, nx := y+dy, x+dx
+						if ny < 0 || ny >= h || nx < 0 || nx >= w {
+							continue
+						}
+						if invertMask[ny*w+nx] {
+							neighbor = true
+							break neighbors
+						}
+					}
+				}
+				if neighbor {
+					rgba[di] = 0xFF
+					rgba[di+1] = 0xFF
+					rgba[di+2] = 0xFF
+					rgba[di+3] = 0xFF
+				}
+			}
+		}
+	}
+
 	return rgba, buf
 }
 

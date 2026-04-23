@@ -157,7 +157,8 @@ func TestDecodeNewPointer(t *testing.T) {
 }
 
 func TestTransparency(t *testing.T) {
-	// 2x1 24bpp: AND=1+XOR=black → transparent, AND=1+XOR=white → semi-transparent
+	// 2x1 24bpp: AND=1+XOR=black → transparent, AND=1+XOR=white → XOR-invert
+	// (rendered as opaque black with white halo painted into transparent neighbors).
 	w, h := 2, 1
 
 	andMask := []byte{0xC0, 0x00} // bits: 11000000 → both pixels AND=1
@@ -165,7 +166,7 @@ func TestTransparency(t *testing.T) {
 	// XOR: 24bpp, row = 2 pixels × 3 bytes = 6
 	xorMask := []byte{
 		0x00, 0x00, 0x00, // pixel 0: black → transparent
-		0xFF, 0xFF, 0xFF, // pixel 1: white → XOR/semi-transparent
+		0xFF, 0xFF, 0xFF, // pixel 1: white → XOR-invert → opaque black
 	}
 
 	data := make([]byte, 14+len(xorMask)+len(andMask))
@@ -184,13 +185,16 @@ func TestTransparency(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Pixel 0: AND=1, XOR=black → transparent
-	if pu.Data[3] != 0 {
-		t.Fatalf("pixel 0 alpha: got %d, want 0", pu.Data[3])
+	// Pixel 0: originally transparent, but adjacent to the XOR-invert pixel →
+	// painted opaque white by the halo pass.
+	r, g, b, a := pu.Data[0], pu.Data[1], pu.Data[2], pu.Data[3]
+	if r != 0xFF || g != 0xFF || b != 0xFF || a != 0xFF {
+		t.Fatalf("pixel 0 (halo): got RGBA(%d,%d,%d,%d), want (255,255,255,255)", r, g, b, a)
 	}
-	// Pixel 1: AND=1, XOR=white → semi-transparent (0x80)
-	if pu.Data[7] != 0x80 {
-		t.Fatalf("pixel 1 alpha: got %d, want 128", pu.Data[7])
+	// Pixel 1: AND=1, XOR=white → opaque black (XOR-invert)
+	r, g, b, a = pu.Data[4], pu.Data[5], pu.Data[6], pu.Data[7]
+	if r != 0 || g != 0 || b != 0 || a != 0xFF {
+		t.Fatalf("pixel 1 (XOR-invert): got RGBA(%d,%d,%d,%d), want (0,0,0,255)", r, g, b, a)
 	}
 }
 
@@ -258,19 +262,20 @@ func TestMonochrome(t *testing.T) {
 		t.Fatalf("data len: got %d, want %d", len(pu.Data), w*h*4)
 	}
 
-	// AND=1, XOR=1: semi-transparent white for bits 0,2,4,6
+	// AND=1, XOR=1: XOR-invert → opaque black for bits 0,2,4,6
 	// AND=0, XOR=1: opaque white for bits 1,3,5,7
+	// (No transparent pixels here, so the halo pass has nothing to paint.)
 	for x := range w {
-		a := pu.Data[x*4+3]
+		r, g, b, a := pu.Data[x*4], pu.Data[x*4+1], pu.Data[x*4+2], pu.Data[x*4+3]
 		if x%2 == 0 {
-			// AND=1 (bit pattern 10101010), XOR=1 → semi-transparent
-			if a != 0x80 {
-				t.Fatalf("pixel %d: alpha=%d, want 128", x, a)
+			// AND=1 (bit pattern 10101010), XOR=1 → opaque black
+			if r != 0 || g != 0 || b != 0 || a != 0xFF {
+				t.Fatalf("pixel %d (XOR-invert): got RGBA(%d,%d,%d,%d), want (0,0,0,255)", x, r, g, b, a)
 			}
 		} else {
 			// AND=0, XOR=1 → opaque white
-			if a != 0xFF {
-				t.Fatalf("pixel %d: alpha=%d, want 255", x, a)
+			if r != 0xFF || g != 0xFF || b != 0xFF || a != 0xFF {
+				t.Fatalf("pixel %d: got RGBA(%d,%d,%d,%d), want (255,255,255,255)", x, r, g, b, a)
 			}
 		}
 	}
