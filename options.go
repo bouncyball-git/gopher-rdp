@@ -225,9 +225,10 @@ func (o *Options) Validate() error {
 		if d.Name == "" {
 			return ErrDriveNameRequired
 		}
-		if len(d.Name) > 8 {
-			d.Name = d.Name[:8]
-		}
+		// Do not truncate Name to 8 here: the 8-byte limit belongs only to the
+		// PreferredDosName, which the device-announce builder derives separately
+		// (7 ASCII chars + null). Name feeds the variable-length DeviceData
+		// friendly name Windows displays, so it must keep its full length.
 		fi, err := os.Stat(d.LocalPath)
 		if err != nil {
 			return fmt.Errorf("drive %q: %w", d.Name, err)
@@ -242,9 +243,8 @@ func (o *Options) Validate() error {
 		if s.Name == "" {
 			return fmt.Errorf("serial %d: name is required", i)
 		}
-		if len(s.Name) > 8 {
-			s.Name = s.Name[:8]
-		}
+		// Not truncated: the 8-byte cap is the PreferredDosName's; s.Name feeds
+		// the full-length DeviceData name (see drive note above).
 		if runtime.GOOS != "windows" {
 			fi, err := os.Stat(s.Path)
 			if err != nil {
@@ -261,9 +261,8 @@ func (o *Options) Validate() error {
 		if p.Name == "" {
 			return fmt.Errorf("parallel %d: name is required", i)
 		}
-		if len(p.Name) > 8 {
-			p.Name = p.Name[:8]
-		}
+		// Not truncated: the 8-byte cap is the PreferredDosName's; p.Name feeds
+		// the full-length DeviceData name (see drive note above).
 		if runtime.GOOS != "windows" {
 			if _, err := os.Stat(p.Path); err != nil {
 				return fmt.Errorf("parallel %q: %w", p.Name, err)
