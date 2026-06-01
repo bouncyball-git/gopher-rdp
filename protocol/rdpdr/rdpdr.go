@@ -576,7 +576,6 @@ func (h *Handler) sendDeviceListFiltered(includeDevices bool) {
 	}
 
 	var entries []devEntry
-	useUnicode := h.serverCapGenVer >= GeneralCapVersion2
 	var prnIdx int
 	for _, dev := range h.devices {
 		// Pre-logon: only announce smartcard devices.
@@ -610,11 +609,11 @@ func (h *Handler) sendDeviceListFiltered(includeDevices bool) {
 		var devData []byte
 		switch dev.Type() {
 		case DeviceTypeDisk:
-			if useUnicode {
-				// DeviceData: full name as null-terminated UTF-16LE (GENERAL_CAPABILITY_VERSION_02)
-				nameUTF16 := encodeUTF16LE(name)
-				devData = append(nameUTF16, 0, 0) // null terminator
-			}
+			// DeviceData: full drive name as null-terminated ASCII (MS-RDPEFS
+			// 2.2.1.3), matching serial/parallel and the MS reference client.
+			// NOT UTF-16: Windows reads this field as the ASCII friendly name,
+			// so a UTF-16 value displays only the first character ("test" -> "t").
+			devData = append([]byte(name), 0)
 		case DeviceTypeSerial, DeviceTypeParallel:
 			// DeviceData: null-terminated ASCII name (MS-RDPESP 2.2.2.1)
 			devData = append([]byte(name), 0)

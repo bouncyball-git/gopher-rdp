@@ -310,10 +310,10 @@ func TestDeviceListWireFormat(t *testing.T) {
 	}
 
 	pdu := sent[0]
-	// "MYSHARE" = 7 UTF-16 code units + null = 16 bytes DeviceData
-	// header(4) + deviceCount(4) + deviceEntry(20 + 16) = 44
-	if len(pdu) != 44 {
-		t.Fatalf("expected 44 bytes, got %d", len(pdu))
+	// "MYSHARE" = 7 ASCII chars + null = 8 bytes DeviceData (MS-RDPEFS 2.2.1.3)
+	// header(4) + deviceCount(4) + deviceEntry(20 + 8) = 36
+	if len(pdu) != 36 {
+		t.Fatalf("expected 36 bytes, got %d", len(pdu))
 	}
 
 	// Device type should be disk
@@ -334,14 +334,14 @@ func TestDeviceListWireFormat(t *testing.T) {
 		t.Errorf("DOS name = %q, want MYSHARE", dosName)
 	}
 
-	// DeviceDataLength should be 16 (7 UTF-16 code units + null terminator)
+	// DeviceDataLength should be 8 (7 ASCII chars + null terminator)
 	devDataLen := binary.LittleEndian.Uint32(pdu[24:28])
-	if devDataLen != 16 {
-		t.Errorf("deviceDataLength = %d, want 16", devDataLen)
+	if devDataLen != 8 {
+		t.Errorf("deviceDataLength = %d, want 8", devDataLen)
 	}
 
-	// DeviceData should decode to "MYSHARE"
-	devDataName := decodeUTF16LE(pdu[28:44])
+	// DeviceData should be null-terminated ASCII "MYSHARE"
+	devDataName := string(pdu[28:35])
 	if devDataName != "MYSHARE" {
 		t.Errorf("deviceData name = %q, want MYSHARE", devDataName)
 	}
