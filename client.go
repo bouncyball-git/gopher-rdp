@@ -728,11 +728,22 @@ func (c *Client) mcsConnect() error {
 	}
 	channelDefs := []mcs.ChannelDef{
 		{Name: "rdpdr", Options: mcs.ChannelOptionInitialized | mcs.ChannelOptionEncryptRDP},
-		{Name: "drdynvc", Options: mcs.ChannelOptionInitialized | mcs.ChannelOptionCompress},
+	}
+	// The rdpsnd static channel must be advertised for device redirection
+	// (rdpdr) to work: Windows 10 / Server 2016-2022 only initialize the rdpdr
+	// device redirector when rdpsnd is also present, and otherwise never send
+	// the RDPDR Server Announce. Windows 11 dropped this requirement. We do not
+	// drive audio over this channel (audio uses the AUDIO_PLAYBACK_DVC dynamic
+	// channel); it is advertised solely to satisfy that gate, so only when some
+	// device redirection is actually configured. Options match the MS reference client.
+	if len(c.opts.Drives) > 0 || len(c.opts.Serials) > 0 || len(c.opts.Parallels) > 0 || len(c.opts.Printers) > 0 || c.opts.Smartcard != nil {
+		channelDefs = append(channelDefs, mcs.ChannelDef{Name: "rdpsnd", Options: mcs.ChannelOptionInitialized | mcs.ChannelOptionEncryptRDP})
 	}
 	if c.opts.Clipboard {
 		channelDefs = append(channelDefs, mcs.ChannelDef{Name: "cliprdr", Options: mcs.ChannelOptionInitialized | mcs.ChannelOptionEncryptRDP | mcs.ChannelOptionCompressRDP | mcs.ChannelOptionShowProtocol})
 	}
+	// drdynvc must be the last static channel (matches MS reference client ordering).
+	channelDefs = append(channelDefs, mcs.ChannelDef{Name: "drdynvc", Options: mcs.ChannelOptionInitialized | mcs.ChannelOptionCompress})
 	// Audio channels are DVC-only (AUDIO_PLAYBACK_DVC, AUDIO_INPUT).
 	netData := &mcs.ClientNetworkData{
 		Channels: channelDefs,
