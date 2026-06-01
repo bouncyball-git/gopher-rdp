@@ -28,6 +28,7 @@ Compiles and runs on Linux (primarily developed for), Windows and MacOS (with so
 - [Protocol Specifications Implemented](#protocol-specifications-implemented)
 - [Project Structure](#project-structure)
 - [Build & Test](#build--test)
+- [Changelog](#changelog)
 - [License](#license)
 
 ## Quick Start
@@ -777,6 +778,34 @@ go vet ./...                          # Static analysis
 ./build.sh web darwin/arm64           # macOS Apple Silicon
 ./build.sh web linux/arm64            # Linux ARM64
 ```
+
+## Changelog
+
+### v1.0.3
+
+- **Device redirection fixed on Windows 10 / Server 2016–2022.** The `rdpsnd`
+  static channel is now advertised in the GCC Client Network Data whenever any
+  device redirection (drive, printer, serial, parallel, or smartcard) is
+  configured. Windows 10 and Server 2016–2022 only initialize the `rdpdr` device
+  redirector when `rdpsnd` is also present — without it the server joins the
+  `rdpdr` channel but never sends the RDPDR Server Announce, so redirection
+  silently failed. (Windows 11 dropped this coupling, which is why it worked
+  there.) The channel is advertised solely to satisfy this gate; audio still
+  flows over the `AUDIO_PLAYBACK_DVC` dynamic channel.
+- **Drive redirection:** device announce `DeviceData` is now encoded as ASCII
+  rather than UTF-16, matching the MS reference client.
+
+### v1.0.2
+
+- GUI viewer: mouse cursor is now rendered visibly (white background) in editor
+  contexts.
+
+### v1.0.1
+
+- GUI viewer DPI behavior aligned with the web client: `-gui WxH` now specifies
+  the *logical* window size, with the RDP session rendered at `W*DPR x H*DPR`.
+  Both viewers default to nearest-neighbor filtering; `-interpolate` switches to
+  bilinear, and `-no-dpr` forces `DPR=1.0`.
 
 ## License
 
