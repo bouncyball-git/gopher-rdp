@@ -5633,6 +5633,17 @@ func (c *Client) RefreshRect(x, y, width, height int) error {
 	if c.State() != StateConnected {
 		return ErrNotConnected
 	}
+	// RefreshRect coordinates are inclusive: a w×h rect at (x,y) spans
+	// (x,y)..(x+w-1,y+h-1). A zero/negative size underflows x+width-1 to 0xFFFF,
+	// turning an "empty" request (e.g. the keepalive's RefreshRect(0,0,0,0)) into a
+	// full-screen refresh — which forces the server to repaint the whole desktop.
+	// Clamp to a minimal 1×1 so an empty request stays a single pixel.
+	if width < 1 {
+		width = 1
+	}
+	if height < 1 {
+		height = 1
+	}
 	return c.sendDataPDU(pdu.PDUType2RefreshRect,
 		pdu.EncodeRefreshRect(uint16(x), uint16(y), uint16(x+width-1), uint16(y+height-1)))
 }
